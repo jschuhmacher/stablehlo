@@ -672,14 +672,16 @@ LogicalResult CustomCallOp::verifyKnownCustomCalls() {
     if (!isa<MemRefType>(operandPartType)) continue;
 
     if (!outputParts.insert(outputTupleIndices).second) {
-      emitOpError() << "buffer output " + printIndices(outputTupleIndices) +
-                           " is used in output_operand_alias more than once";
+      return emitOpError()
+             << "buffer output " + printIndices(outputTupleIndices) +
+                    " is used in output_operand_alias more than once";
     }
     if (!operandParts.insert(std::make_pair(operandIndex, operandTupleIndices))
              .second) {
-      emitOpError() << "buffer operand " + std::to_string(operandIndex) +
-                           printIndices(operandTupleIndices) +
-                           " is used in output_operand_alias more than once";
+      return emitOpError()
+             << "buffer operand " + std::to_string(operandIndex) +
+                    printIndices(operandTupleIndices) +
+                    " is used in output_operand_alias more than once";
     }
   }
 
