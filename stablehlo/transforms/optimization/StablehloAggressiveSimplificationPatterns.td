@@ -79,9 +79,15 @@ def ElementsAttrSplat : AttrConstraint<
           "llvm::cast<mlir::ElementsAttr>($_self).isSplat()">,
     "is any splat elements attribute">;
 
-def AnyZero : AttrConstraint<
-    CPred<"::mlir::matchPattern($_self, m_AnyAttrOf(m_Zero(), m_AnyZeroFloat()))">,
-    "is int or float zero">;
+// -0.0 + -0.0 is -0.0, but -0.0 + 0.0 is 0.0.
+def AddIdentity : AttrConstraint<
+    CPred<"::mlir::matchPattern($_self, m_AnyAttrOf(m_Zero(), m_NegZeroFloat()))">,
+    "is int zero or float negative zero">;
+
+// -0.0 - 0.0 is -0.0, but -0.0 - -0.0 is 0.0.
+def SubtractIdentity : AttrConstraint<
+    CPred<"::mlir::matchPattern($_self, m_AnyAttrOf(m_Zero(), m_PosZeroFloat()))">,
+    "is int zero or float positive zero">;
 
 def ZeroArrayI64 : AttrConstraint<
     CPred<"::llvm::all_of(::llvm::cast<DenseI64ArrayAttr>($_self).asArrayRef(), [](int64_t val) { return val == 0; })">,
@@ -175,9 +181,9 @@ class CanonicalizeConstantToRhs<Op StableHLO_OpType>
 def AddOp_CanonicalizeConstantToRhs
   : CanonicalizeConstantToRhs<StableHLO_AddOp>;
 
-// Pattern: add(X, 0) -> X
+// Pattern: add(X, 0) -> X, add(X, -0.0) -> X
 def AddOp_RemoveNoop
-  : Pat<(StableHLO_AddOp:$op $lhs, (ConstantLikeMatcher AnyZero:$value)),
+  : Pat<(StableHLO_AddOp:$op $lhs, (ConstantLikeMatcher AddIdentity:$value)),
         (replaceWithValue $lhs), [],
         [(MergeDiscardableAttributes $op, $lhs)]>;
 
@@ -633,7 +639,7 @@ def SubtractOp_FoldToZero
 
 // Pattern: subtract(X, 0) -> X
 def SubtractOp_RemoveNoop
-  : Pat<(StableHLO_SubtractOp:$op $lhs, (StableHLO_ConstantOp AnyZero:$value)),
+  : Pat<(StableHLO_SubtractOp:$op $lhs, (StableHLO_ConstantOp SubtractIdentity:$value)),
         (replaceWithValue $lhs), [],
         [(MergeDiscardableAttributes $op, $lhs)]>;
 
