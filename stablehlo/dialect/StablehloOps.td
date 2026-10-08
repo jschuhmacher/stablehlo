@@ -1454,14 +1454,14 @@ def StableHLO_WhileOp: StableHLO_Op<"while", [
     }
     ```
   }];
-  let arguments = (ins Variadic<HLO_TensorOrPerAxisQuantizedTensorOrTokenOrBuffer>:$operand /*while_i1*/);
+  let arguments = (ins Variadic<HLO_TensorOrPerAxisQuantizedTensorOrTokenOrTupleOrBuffer>:$operand /*while_i1*/);
 
   let regions = (region
     SizedRegion<1>:$cond /*while_i2*/,
     SizedRegion<1>:$body /*while_i3*/
   );
 
-  let results = (outs Variadic<HLO_TensorOrPerAxisQuantizedTensorOrTokenOrBuffer>);
+  let results = (outs Variadic<HLO_TensorOrPerAxisQuantizedTensorOrTokenOrTupleOrBuffer>);
 
   let hasVerifier = 1;
 
@@ -3499,7 +3499,7 @@ def StableHLO_ReturnOp : StableHLO_Op<"return", [Pure, Terminator]> {
   }];
 
   let arguments = (ins
-    Variadic<HLO_TensorOrPerAxisQuantizedTensorOrTokenOrBuffer>:$results
+    Variadic<HLO_TensorOrPerAxisQuantizedTensorOrTokenOrTupleOrBuffer>:$results
   );
 
   let assemblyFormat = "$results attr-dict (`:` type($results)^)?";
