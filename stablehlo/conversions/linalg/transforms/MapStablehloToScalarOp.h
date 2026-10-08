@@ -422,8 +422,10 @@ inline Value mapStablehloOpToStdScalarOp<stablehlo::CompareOp>(
                                                    lhs, rhs);
   }
   if (auto floatType = dyn_cast<FloatType>(elementType)) {
-    if (adaptor.getCompareType() &&
-        *adaptor.getCompareType() == stablehlo::ComparisonType::TOTALORDER) {
+    std::optional<stablehlo::ComparisonType> compareType =
+        adaptor.getCompareType();
+    if (compareType == stablehlo::ComparisonType::TOTALORDER ||
+        compareType == stablehlo::ComparisonType::WEAKORDER) {
       // The semantics of totalorder fp compare are
       // -NaN < -Inf < -Finite < -0 < +0 < +Finite < +Inf < +NaN
       auto intType = b->getIntegerType(floatType.getWidth());
@@ -443,12 +445,23 @@ inline Value mapStablehloOpToStdScalarOp<stablehlo::CompareOp>(
       // then y is ordered as an int32_t such that finite values have the
       // obvious order, -0 is ordered before 0, and -NaN and NaN appear at the
       // beginning and end of the ordering.
-      auto toIntegral = [&](Value v) {
+      // WEAKORDER then gives both zeros one key, and every NaN the key above
+      // +Inf.
+      auto toIntegral = [&](Value v) -> Value {
         auto x = arith::BitcastOp::create(*b, loc, intType, v);
         auto cmp =
             arith::CmpIOp::create(*b, loc, arith::CmpIPredicate::slt, x, zero);
         auto sub = arith::SubIOp::create(*b, loc, max, x);
-        return arith::SelectOp::create(*b, loc, cmp, sub, x);
+        Value key = arith::SelectOp::create(*b, loc, cmp, sub, x);
+        if (compareType != stablehlo::ComparisonType::WEAKORDER) return key;
+        auto floatZero = arith::ConstantOp::create(*b, loc, floatType,
+                                                   b->getZeroAttr(floatType));
+        auto isZero = arith::CmpFOp::create(*b, loc, arith::CmpFPredicate::OEQ,
+                                            v, floatZero);
+        key = arith::SelectOp::create(*b, loc, isZero, zero, key);
+        auto isNaN =
+            arith::CmpFOp::create(*b, loc, arith::CmpFPredicate::UNO, v, v);
+        return arith::SelectOp::create(*b, loc, isNaN, max, key);
       };
       auto lhsInt = toIntegral(lhs);
       auto rhsInt = toIntegral(rhs);
