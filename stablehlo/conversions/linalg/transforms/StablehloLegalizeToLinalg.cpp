@@ -1042,9 +1042,7 @@ struct RealDynamicSliceConverter final
   static Value computeSize(Location loc, Value start, Value limit, Value stride,
                            ConversionPatternRewriter& b) {
     Value delta = arith::SubIOp::create(b, loc, limit, start);
-    Value ret = arith::CeilDivUIOp::create(b, loc, delta, stride);
-    if (ret.getType().isIndex()) return ret;
-    return arith::IndexCastOp::create(b, loc, b.getIndexType(), ret);
+    return arith::CeilDivUIOp::create(b, loc, delta, stride);
   }
 
   LogicalResult matchAndRewrite(
@@ -1060,23 +1058,21 @@ struct RealDynamicSliceConverter final
           realDynamicSliceOp,
           "requires same element type for all dimension specification");
     }
-    Type arithType =
-        dimElementType.isIndex() ? rewriter.getI64Type() : dimElementType;
     Type indexType = rewriter.getIndexType();
+    auto dimType = llvm::cast<ShapedType>(
+        realDynamicSliceOp.getStartIndices().getType());
 
     auto resultType = llvm::cast<RankedTensorType>(
         this->typeConverter->convertType(realDynamicSliceOp.getType()));
-    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     SmallVector<OpFoldResult> offsets, sizes, strides;
-    SmallVector<Type, 3> clampType(3, arithType);
     for (auto i : llvm::seq<unsigned>(0, argType.getRank())) {
       Value dim = arith::ConstantIndexOp::create(rewriter, loc, i);
-      Value start = tensor::ExtractOp::create(rewriter, loc,
-                                              adaptor.getStartIndices(), dim);
-      Value limit = tensor::ExtractOp::create(rewriter, loc,
-                                              adaptor.getLimitIndices(), dim);
-      Value stride =
-          tensor::ExtractOp::create(rewriter, loc, adaptor.getStrides(), dim);
+      Value start = extractIndexFromTensor(
+          rewriter, loc, adaptor.getStartIndices(), dimType, dim);
+      Value limit = extractIndexFromTensor(
+          rewriter, loc, adaptor.getLimitIndices(), dimType, dim);
+      Value stride = extractIndexFromTensor(rewriter, loc,
+                                            adaptor.getStrides(), dimType, dim);
 
       // Compute i-th dimension size of the result : size[i].
       // If the i-th dimension of the result type is known, we go ahead with it
@@ -1087,11 +1083,6 @@ struct RealDynamicSliceConverter final
               ? computeSize(loc, start, limit, stride, rewriter)
               : arith::ConstantIndexOp::create(rewriter, loc, resultDimSize);
 
-      // We can now convert start to index.
-      if (!start.getType().isIndex())
-        start = arith::IndexCastOp::create(rewriter, loc,
-                                           rewriter.getIndexType(), start);
-
       // Fetch i-th dimension size of the operand and calculate upper bound as
       //   ub = operand_dim[i] - size[i]
       Value operandDimSize =
@@ -1101,19 +1092,13 @@ struct RealDynamicSliceConverter final
 
       // We clamp the start_index to keep it bounded as
       //   0 <= start_index[i] <= ub
-      // Clamp does not support index type, so cast to integer type.
-      start = arith::MaxSIOp::create(rewriter, loc, start, zero);
-      start = arith::MinSIOp::create(rewriter, loc, start, upperBound);
+      start = clampStartIndex(rewriter, loc, start, upperBound, dimType);
 
       offsets.push_back(start);
       if (ShapedType::isDynamic(resultDimSize))
         sizes.push_back(size);
       else
         sizes.push_back(IntegerAttr::get(indexType, resultDimSize));
-
-      if (!stride.getType().isIndex())
-        stride =
-            rewriter.createOrFold<arith::IndexCastOp>(loc, indexType, stride);
       strides.push_back(stride);
     }
 
