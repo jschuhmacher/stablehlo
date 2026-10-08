@@ -103,6 +103,18 @@ Value extractIndexFromTensor(OpBuilder& builder, Location loc, Value tensor,
                    loc, builder.getIndexType(), extracted);
 }
 
+/// Clamps the index form of a start index to [0, upperBound]. An unsigned
+/// start index is never negative, but a signed comparison reads large ones as
+/// negative.
+Value clampStartIndex(OpBuilder& builder, Location loc, Value index,
+                      Value upperBound, ShapedType originalType) {
+  if (originalType.getElementType().isUnsignedInteger())
+    return arith::MinUIOp::create(builder, loc, index, upperBound);
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+  index = arith::MaxSIOp::create(builder, loc, index, zero);
+  return arith::MinSIOp::create(builder, loc, index, upperBound);
+}
+
 //===----------------------------------------------------------------------===//
 // stablehlo.Einsum conversion patterns.
 //===----------------------------------------------------------------------===//
@@ -1576,17 +1588,13 @@ struct DynamicSliceConverter final
       Value startIndex =
           extractIndexFromTensor(rewriter, loc, start, originalStartIndexType);
 
-      Value mn = arith::ConstantIndexOp::create(rewriter, loc, 0);
-
       Value mx =
           rewriter.createOrFold<tensor::DimOp>(loc, adaptor.getOperand(), idx);
       mx = rewriter.createOrFold<arith::SubIOp>(
           loc, mx, arith::ConstantIndexOp::create(rewriter, loc, size));
 
-      startIndex = arith::MaxSIOp::create(rewriter, loc, startIndex, mn);
-      startIndex = arith::MinSIOp::create(rewriter, loc, startIndex, mx);
-
-      startIndices.push_back(startIndex);
+      startIndices.push_back(clampStartIndex(rewriter, loc, startIndex, mx,
+                                             originalStartIndexType));
     }
 
     int64_t rank = argType.getRank();
@@ -1630,21 +1638,18 @@ struct DynamicUpdateSliceConverter final
     }
 
     SmallVector<OpFoldResult, 3> startIndices;
-    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     for (auto [idx, start] : llvm::enumerate(adaptor.getStartIndices())) {
       // By stablehlo.DynamicUpdateSlice definition:
       //   `start_indices[i] = clamp(start_indices[i],
       //       0, operand.dimension_size[i] - update.dimension_size[i])`
-      Value startIndex = extractIndexFromTensor(
-          rewriter, loc, start,
-          cast<ShapedType>(op.getStartIndices()[idx].getType()));
+      auto startType = cast<ShapedType>(op.getStartIndices()[idx].getType());
+      Value startIndex =
+          extractIndexFromTensor(rewriter, loc, start, startType);
       Value ub = arith::ConstantIndexOp::create(
           rewriter, loc,
           operandType.getDimSize(idx) - updateType.getDimSize(idx));
-
-      startIndex = arith::MaxSIOp::create(rewriter, loc, startIndex, zero);
-      startIndex = arith::MinSIOp::create(rewriter, loc, startIndex, ub);
-      startIndices.push_back(startIndex);
+      startIndices.push_back(
+          clampStartIndex(rewriter, loc, startIndex, ub, startType));
     }
 
     int64_t rank = operandType.getRank();
@@ -1938,12 +1943,9 @@ struct GatherConversion final : OpConversionPattern<mlir::stablehlo::GatherOp> {
           loc, operandDimSize, outputDimSize);
 
       // Clamp indices to [0, i, operand_dim-output_dim].
-      Value clamp = arith::MinSIOp::create(
-          rewriter, loc,
-          arith::MaxSIOp::create(rewriter, loc, constants[0],
-                                 remappedIndexFromIndices[i]),
-          largestValidIndex);
-      remappedIndexFromIndices[i] = clamp;
+      remappedIndexFromIndices[i] = clampStartIndex(
+          rewriter, loc, remappedIndexFromIndices[i], largestValidIndex,
+          gatherOp.getStartIndices().getType());
     }
 
     // For the (remapped) offset dimensions, the index is the current index in
