@@ -108,12 +108,12 @@ func.func @gather_unsigned_index(
   func.return %res : tensor<1x8x8xi32>
 }
 
-// CHECK-DAG:       %[[C0:.+]] = arith.constant 0
+// Unsigned indices clamp with an unsigned minimum; dimension 0 folds to 0.
 // CHECK-DAG:       %[[C1:.+]] = arith.constant 1
-// CHECK:           %[[S0_INT:.+]] = tensor.extract {{.*}}[{{.*}}, %[[C0]]]
-// CHECK:           arith.index_castui %[[S0_INT]] : i32 to index
+// CHECK-DAG:       %[[C3:.+]] = arith.constant 3
 // CHECK:           %[[S1_INT:.+]] = tensor.extract {{.*}}[{{.*}}, %[[C1]]]
-// CHECK:           arith.index_castui %[[S1_INT]] : i32 to index
+// CHECK:           %[[S1:.+]] = arith.index_castui %[[S1_INT]] : i32 to index
+// CHECK:           arith.minui %[[S1]], %[[C3]] : index
 
 // -----
 

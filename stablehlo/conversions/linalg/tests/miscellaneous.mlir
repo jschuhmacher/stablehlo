@@ -1490,8 +1490,29 @@ func.func @dynamic_slice_unsigned_index(
   func.return %0 : tensor<1x4xui32>
 }
 
+// An unsigned start index clamps with an unsigned minimum alone.
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract
-// CHECK:         arith.index_castui %[[EXTRACT1]]
+// CHECK:         %[[INDEX1:.*]] = arith.index_castui %[[EXTRACT1]]
+// CHECK-NOT:     arith.maxsi
+// CHECK:         arith.minui %[[INDEX1]]
+
+// -----
+
+// CHECK-LABEL: func @dynamic_update_slice_unsigned_index(
+func.func @dynamic_update_slice_unsigned_index(
+    %target: tensor<5x3xi32>, %update: tensor<2x3xi32>, %start1: tensor<ui64>,
+    %start2: tensor<ui64>) -> tensor<5x3xi32> {
+  %0 = "stablehlo.dynamic_update_slice"(%target, %update, %start1, %start2)
+      : (tensor<5x3xi32>, tensor<2x3xi32>, tensor<ui64>, tensor<ui64>)
+      -> tensor<5x3xi32>
+  func.return %0 : tensor<5x3xi32>
+}
+
+// CHECK:         %[[EXTRACT1:.*]] = tensor.extract
+// CHECK:         %[[INDEX1:.*]] = arith.index_castui %[[EXTRACT1]]
+// CHECK-NOT:     arith.maxsi
+// CHECK:         arith.minui %[[INDEX1]]
+// CHECK:         tensor.insert_slice
 
 // -----
 
