@@ -199,6 +199,88 @@ func.func @while_c2(%arg0: tensor<3xf32>) -> tensor<3xf32> {
 
 // -----
 
+// Tuple state can contain nested tuples, empty tuples, and token leaves.
+func.func @while_tuple_state(
+    %state: tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>>) ->
+    tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>> {
+  %result = "stablehlo.while"(%state) ({
+  ^bb0(%cond_state: tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>>):
+    %continue = stablehlo.constant dense<false> : tensor<i1>
+    stablehlo.return %continue : tensor<i1>
+  }, {
+  ^bb0(%body_state: tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>>):
+    stablehlo.return %body_state : tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>>
+  }) : (tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>>) ->
+       tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>>
+  func.return %result : tuple<tuple<tensor<3x5xi32>, !stablehlo.token>, tuple<>>
+}
+
+// -----
+
+func.func @while_tuple_condition_mismatch(
+    %state: tuple<tensor<3x5xi32>>) -> tuple<tensor<3x5xi32>> {
+  // expected-error @+1 {{expect operands to be compatible with condition block arguments}}
+  %result = "stablehlo.while"(%state) ({
+  ^bb0(%cond_state: tuple<tensor<3x5xf32>>):
+    %continue = stablehlo.constant dense<false> : tensor<i1>
+    stablehlo.return %continue : tensor<i1>
+  }, {
+  ^bb0(%body_state: tuple<tensor<3x5xi32>>):
+    stablehlo.return %body_state : tuple<tensor<3x5xi32>>
+  }) : (tuple<tensor<3x5xi32>>) -> tuple<tensor<3x5xi32>>
+  func.return %result : tuple<tensor<3x5xi32>>
+}
+
+// -----
+
+func.func @while_tuple_body_argument_mismatch(
+    %state: tuple<tensor<3x5xi32>>) -> tuple<tensor<3x5xi32>> {
+  // expected-error @+1 {{expect operands to be compatible with body block arguments}}
+  %result = "stablehlo.while"(%state) ({
+  ^bb0(%cond_state: tuple<tensor<3x5xi32>>):
+    %continue = stablehlo.constant dense<false> : tensor<i1>
+    stablehlo.return %continue : tensor<i1>
+  }, {
+  ^bb0(%body_state: tuple<tensor<5x3xi32>>):
+    stablehlo.return %state : tuple<tensor<3x5xi32>>
+  }) : (tuple<tensor<3x5xi32>>) -> tuple<tensor<3x5xi32>>
+  func.return %result : tuple<tensor<3x5xi32>>
+}
+
+// -----
+
+func.func @while_tuple_body_return_mismatch(
+    %state: tuple<tensor<3x5xi32>>, %other: tuple<tensor<3x5xf32>>) -> tuple<tensor<3x5xi32>> {
+  // expected-error @+1 {{expect operands to be compatible with body block return types}}
+  %result = "stablehlo.while"(%state) ({
+  ^bb0(%cond_state: tuple<tensor<3x5xi32>>):
+    %continue = stablehlo.constant dense<false> : tensor<i1>
+    stablehlo.return %continue : tensor<i1>
+  }, {
+  ^bb0(%body_state: tuple<tensor<3x5xi32>>):
+    stablehlo.return %other : tuple<tensor<3x5xf32>>
+  }) : (tuple<tensor<3x5xi32>>) -> tuple<tensor<3x5xi32>>
+  func.return %result : tuple<tensor<3x5xi32>>
+}
+
+// -----
+
+func.func @while_tuple_result_mismatch(%state: tuple<tensor<3x5xi32>>) -> tuple<tensor<3x5xf32>> {
+  // expected-error @+2 {{failed to infer returned types}}
+  // expected-error @+1 {{inferred type(s) 'tuple<tensor<3x5xi32>>' are incompatible with return type(s) of operation 'tuple<tensor<3x5xf32>>'}}
+  %result = "stablehlo.while"(%state) ({
+  ^bb0(%cond_state: tuple<tensor<3x5xi32>>):
+    %continue = stablehlo.constant dense<false> : tensor<i1>
+    stablehlo.return %continue : tensor<i1>
+  }, {
+  ^bb0(%body_state: tuple<tensor<3x5xi32>>):
+    stablehlo.return %body_state : tuple<tensor<3x5xi32>>
+  }) : (tuple<tensor<3x5xi32>>) -> tuple<tensor<3x5xf32>>
+  func.return %result : tuple<tensor<3x5xf32>>
+}
+
+// -----
+
 func.func @while_c2(%arg0: tensor<3xf32>) -> tensor<3xf32> {
   %cst_0 = arith.constant dense<0> : tensor<1xi32>
   %cst_1 = arith.constant dense<[100, 100]> : tensor<2xi32>
