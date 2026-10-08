@@ -22,11 +22,30 @@ func.func @add_zero_like_lhs(%arg0: tensor<i32>) -> tensor<i32> {
 
 // CHECK-LABEL: @add_zero_like_rhs
 func.func @add_zero_like_rhs(%arg0: tensor<f32>) -> tensor<f32> {
-  %0 = stablehlo.constant dense<0.0> : tensor<f32>
+  %0 = stablehlo.constant dense<-0.0> : tensor<f32>
   %1 = stablehlo.add %arg0, %0 : tensor<f32>
   // CHECK-NOT: stablehlo.constant
   // CHECK: return %arg0
   return %1 : tensor<f32>
+}
+
+// CHECK-LABEL: @add_negative_zero
+func.func @add_negative_zero(%arg0: tensor<2x3xf32>) -> tensor<2x3xf32> {
+  %0 = stablehlo.constant dense<-0.0> : tensor<2x3xf32>
+  %1 = stablehlo.add %arg0, %0 : tensor<2x3xf32>
+  // CHECK-NOT: stablehlo.add
+  // CHECK: return %arg0
+  return %1 : tensor<2x3xf32>
+}
+
+// -0.0 + 0.0 is 0.0.
+// CHECK-LABEL: @add_positive_zero
+func.func @add_positive_zero(%arg0: tensor<2x3xf32>) -> tensor<2x3xf32> {
+  %0 = stablehlo.constant dense<0.0> : tensor<2x3xf32>
+  // CHECK: %[[ADD:.+]] = stablehlo.add %arg0, %{{.+}}
+  %1 = stablehlo.add %arg0, %0 : tensor<2x3xf32>
+  // CHECK: return %[[ADD]]
+  return %1 : tensor<2x3xf32>
 }
 
 // CHECK-LABEL: @add_cst_on_rhs_with_attrs
@@ -1718,6 +1737,16 @@ func.func @subtract_same_lhs_rhs(%arg0: tensor<2xi32>) -> tensor<2xi32> {
   return %0 : tensor<2xi32>
 }
 
+// -0.0 - -0.0 is 0.0.
+// CHECK-LABEL: @subtract_negative_zero
+func.func @subtract_negative_zero(%arg0: tensor<2x3xf32>) -> tensor<2x3xf32> {
+  %0 = stablehlo.constant dense<-0.0> : tensor<2x3xf32>
+  // CHECK: %[[SUB:.+]] = stablehlo.subtract %arg0, %{{.+}}
+  %1 = stablehlo.subtract %arg0, %0 : tensor<2x3xf32>
+  // CHECK: return %[[SUB]]
+  return %1 : tensor<2x3xf32>
+}
+
 // CHECK-LABEL: @subtract_zero
 func.func @subtract_zero(%arg0: tensor<2xi32>, %arg1: tensor<2xf32>) -> (tensor<2xi32>, tensor<2xf32>) {
   %0 = stablehlo.constant dense<0> : tensor<2xi32>
@@ -2520,7 +2549,7 @@ func.func @broadcast_in_dim_merge_composition_sharding(
 
 // CHECK-LABEL: @add_zero_merge_sharding
 func.func @add_zero_merge_sharding(%arg0: tensor<f32>) -> tensor<f32> {
-  %zero = stablehlo.constant dense<0.0> : tensor<f32>
+  %zero = stablehlo.constant dense<-0.0> : tensor<f32>
   %0 = stablehlo.negate %arg0 : tensor<f32>
   %1 = stablehlo.add %0, %zero {mhlo.sharding = "{replicated}"} : tensor<f32>
   // CHECK: [[NEG:%.+]] = stablehlo.negate %arg0 {mhlo.sharding = "{replicated}"}
