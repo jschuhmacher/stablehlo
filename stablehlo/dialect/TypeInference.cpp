@@ -984,6 +984,10 @@ SmallVector<ShapedType> getAccumulatorTypesOrInputTypes(
   if (region.empty()) return llvm::to_vector(inputTypes);
 
   Block& block = region.front();
+  // Non-shaped returns are diagnosed by verifyReducerShape.
+  if (!llvm::all_of(block.getTerminator()->getOperandTypes(),
+                    llvm::IsaPred<ShapedType>))
+    return llvm::to_vector(inputTypes);
   return llvm::map_to_vector(
       block.getTerminator()->getOperands(),
       [&](Value v) { return cast<ShapedType>(v.getType()); });
@@ -3074,8 +3078,8 @@ LogicalResult inferMapOp(
 
   // map_c4
   auto computationOutputType =
-      cast<RankedTensorType>(computationOutputs[0].getType());
-  if (computationOutputType.getRank() != 0)
+      dyn_cast<RankedTensorType>(computationOutputs[0].getType());
+  if (!computationOutputType || computationOutputType.getRank() != 0)
     return emitOptionalError(location,
                              "computation must return 0-rank tensor, but got: ",
                              computationOutputs[0].getType());
@@ -5225,8 +5229,9 @@ LogicalResult verifySortOp(std::optional<Location> location, ValueRange inputs,
                              "comparator must return single output but got ",
                              comparatorResult.size());
   // sort_c5
-  auto comparatorResultType = cast<ShapedType>(comparatorResult[0].getType());
-  if (comparatorResultType.getRank() != 0 ||
+  auto comparatorResultType =
+      dyn_cast<ShapedType>(comparatorResult[0].getType());
+  if (!comparatorResultType || comparatorResultType.getRank() != 0 ||
       !comparatorResultType.getElementType().isInteger(1))
     return emitOptionalError(location,
                              "comparator must return tensor<i1> but got ",
@@ -5270,8 +5275,9 @@ LogicalResult verifyWhileOp(std::optional<Location> location,
         location, "expect condition body returns a single value but got ",
         condReturnTypes.size());
   // while_c1
-  auto operandType = cast<ShapedType>(condReturnTypes[0]);
-  if (operandType.getRank() != 0 || !operandType.getElementType().isInteger(1))
+  auto operandType = dyn_cast<ShapedType>(condReturnTypes[0]);
+  if (!operandType || operandType.getRank() != 0 ||
+      !operandType.getElementType().isInteger(1))
     return emitOptionalError(
         location,
         "expect condition block return a zero-ranked tensor of i1 but got ",
