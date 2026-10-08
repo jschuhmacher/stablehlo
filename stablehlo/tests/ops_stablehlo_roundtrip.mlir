@@ -899,3 +899,8 @@ func.func @test_attr_type_extensions(%arg: tensor<4xf32>, %size: tensor<i32>) ->
   %1 = tensor.cast %0 : tensor<?xf32, #stablehlo.type_extensions<bounds = [4]>> to tensor<?xf32>
   func.return %1 : tensor<?xf32>
 }
+
+func.func @compare_weakorder(%arg0: tensor<2x3xf32>, %arg1: tensor<2x3xf32>) -> tensor<2x3xi1> {
+  %0 = stablehlo.compare LT, %arg0, %arg1, WEAKORDER : (tensor<2x3xf32>, tensor<2x3xf32>) -> tensor<2x3xi1>
+  func.return %0 : tensor<2x3xi1>
+}

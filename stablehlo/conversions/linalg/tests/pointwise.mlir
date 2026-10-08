@@ -683,6 +683,35 @@ func.func @float_cmp_ne(%lhs: tensor<2x2xf32>,
 
 // -----
 
+// WEAKORDER maps both zeros to one key and every NaN above +Inf.
+// CHECK-LABEL: func @float_cmp_weakorder
+func.func @float_cmp_weakorder(%lhs: tensor<2x3xf32>,
+                %rhs: tensor<2x3xf32>) -> (tensor<2x3xi1>) {
+  %0 = "stablehlo.compare"(%lhs, %rhs) {
+    comparison_direction = #stablehlo<comparison_direction LT>,
+    compare_type = #stablehlo<comparison_type WEAKORDER>
+  } : (tensor<2x3xf32>, tensor<2x3xf32>) -> tensor<2x3xi1>
+  func.return %0 : tensor<2x3xi1>
+}
+// CHECK-DAG: %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-DAG: %[[MAX:.*]] = arith.constant 2147483647 : i32
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i32
+// CHECK: linalg.generic
+// CHECK-NEXT: ^bb0(%[[LHS_IN:.*]]: f32, %[[RHS_IN:.*]]: f32, %{{.*}}: i1):
+// CHECK-NEXT:   %[[LHS_INT:.*]] = arith.bitcast %[[LHS_IN]] : f32 to i32
+// CHECK-NEXT:   %[[LHS_NEG:.*]] = arith.cmpi slt, %[[LHS_INT]], %[[C0]] : i32
+// CHECK-NEXT:   %[[LHS_SUB:.*]] = arith.subi %[[MAX]], %[[LHS_INT]] : i32
+// CHECK-NEXT:   %[[LHS_TOTAL:.*]] = arith.select %[[LHS_NEG]], %[[LHS_SUB]], %[[LHS_INT]] : i32
+// CHECK-NEXT:   %[[LHS_IS_ZERO:.*]] = arith.cmpf oeq, %[[LHS_IN]], %[[ZERO]] : f32
+// CHECK-NEXT:   %[[LHS_ZEROED:.*]] = arith.select %[[LHS_IS_ZERO]], %[[C0]], %[[LHS_TOTAL]] : i32
+// CHECK-NEXT:   %[[LHS_IS_NAN:.*]] = arith.cmpf uno, %[[LHS_IN]], %[[LHS_IN]] : f32
+// CHECK-NEXT:   %[[LHS_KEY:.*]] = arith.select %[[LHS_IS_NAN]], %[[MAX]], %[[LHS_ZEROED]] : i32
+// CHECK:        %[[RHS_KEY:.*]] = arith.select %{{.*}}, %[[MAX]], %{{.*}} : i32
+// CHECK-NEXT:   %[[RESULT:.*]] = arith.cmpi slt, %[[LHS_KEY]], %[[RHS_KEY]] : i32
+// CHECK-NEXT:   linalg.yield %[[RESULT]] : i1
+
+// -----
+
 // CHECK-LABEL: func @float_cmp_totalorder
 // CHECK-PRIMITIVE-LABEL: func @float_cmp_totalorder
 func.func @float_cmp_totalorder(%lhs: tensor<2x2xbf16>,

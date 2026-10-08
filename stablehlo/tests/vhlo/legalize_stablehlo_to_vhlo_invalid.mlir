@@ -20,3 +20,12 @@ func.func @type_sparsity(%arg0: tensor<16xf32, #sparse_tensor.encoding<{ map = (
   func.return %0 : tensor<16xf32>
 }
 // CHECK-DISABLED-LABEL: "type_sparsity"
+
+// -----
+
+// VHLO has no encoding for WEAKORDER.
+func.func @compare_weakorder(%arg0: tensor<2x3xf32>, %arg1: tensor<2x3xf32>) -> tensor<2x3xi1> {
+  // expected-error @+1 {{failed to legalize operation 'stablehlo.compare' that was explicitly marked illegal}}
+  %0 = stablehlo.compare LT, %arg0, %arg1, WEAKORDER : (tensor<2x3xf32>, tensor<2x3xf32>) -> tensor<2x3xi1>
+  func.return %0 : tensor<2x3xi1>
+}
