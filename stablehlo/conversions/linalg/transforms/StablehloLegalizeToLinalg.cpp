@@ -115,6 +115,32 @@ Value clampStartIndex(OpBuilder& builder, Location loc, Value index,
   return arith::MinSIOp::create(builder, loc, index, upperBound);
 }
 
+/// Extracts a start index and clamps it to [0, upperBound] as a 64-bit integer,
+/// so a narrower index type cannot truncate it before the clamp.
+Value extractClampedStartIndex(OpBuilder& builder, Location loc, Value tensor,
+                               ShapedType originalType, Value upperBound) {
+  Type i64Type = builder.getI64Type();
+  bool isUnsigned = originalType.getElementType().isUnsignedInteger();
+  Value index = tensor::ExtractOp::create(builder, loc, tensor, ValueRange{});
+  if (index.getType().isIndex()) {
+    index = arith::IndexCastOp::create(builder, loc, i64Type, index);
+  } else if (index.getType().getIntOrFloatBitWidth() < 64) {
+    index = isUnsigned
+                ? arith::ExtUIOp::create(builder, loc, i64Type, index).getResult()
+                : arith::ExtSIOp::create(builder, loc, i64Type, index).getResult();
+  }
+  Value bound = arith::IndexCastOp::create(builder, loc, i64Type, upperBound);
+  if (isUnsigned) {
+    index = arith::MinUIOp::create(builder, loc, index, bound);
+  } else {
+    Value zero = arith::ConstantIntOp::create(builder, loc, i64Type, 0);
+    index = arith::MaxSIOp::create(builder, loc, index, zero);
+    index = arith::MinSIOp::create(builder, loc, index, bound);
+  }
+  return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                    index);
+}
+
 //===----------------------------------------------------------------------===//
 // stablehlo.Einsum conversion patterns.
 //===----------------------------------------------------------------------===//
@@ -1585,16 +1611,13 @@ struct DynamicSliceConverter final
       // By stablehlo.DynamicSlice definition:
       //   `start_indices[i] = clamp(start_indices[i],
       //       0, operand.dimension_size[i] - size_indices[i])`
-      Value startIndex =
-          extractIndexFromTensor(rewriter, loc, start, originalStartIndexType);
-
       Value mx =
           rewriter.createOrFold<tensor::DimOp>(loc, adaptor.getOperand(), idx);
       mx = rewriter.createOrFold<arith::SubIOp>(
           loc, mx, arith::ConstantIndexOp::create(rewriter, loc, size));
 
-      startIndices.push_back(clampStartIndex(rewriter, loc, startIndex, mx,
-                                             originalStartIndexType));
+      startIndices.push_back(extractClampedStartIndex(
+          rewriter, loc, start, originalStartIndexType, mx));
     }
 
     int64_t rank = argType.getRank();
@@ -1643,13 +1666,11 @@ struct DynamicUpdateSliceConverter final
       //   `start_indices[i] = clamp(start_indices[i],
       //       0, operand.dimension_size[i] - update.dimension_size[i])`
       auto startType = cast<ShapedType>(op.getStartIndices()[idx].getType());
-      Value startIndex =
-          extractIndexFromTensor(rewriter, loc, start, startType);
       Value ub = arith::ConstantIndexOp::create(
           rewriter, loc,
           operandType.getDimSize(idx) - updateType.getDimSize(idx));
       startIndices.push_back(
-          clampStartIndex(rewriter, loc, startIndex, ub, startType));
+          extractClampedStartIndex(rewriter, loc, start, startType, ub));
     }
 
     int64_t rank = operandType.getRank();
