@@ -2381,7 +2381,7 @@ struct PadOpNegativePaddingConversion final
       if (high >= 0) {
         padHigh.push_back(high);
       } else {
-        padHigh.push_back(-high);
+        padHigh.push_back(0);
         hasNegativePadding = true;
       }
     }
@@ -2394,13 +2394,22 @@ struct PadOpNegativePaddingConversion final
         rewriter, op.getLoc(), adaptor.getOperand(), adaptor.getPaddingValue(),
         padLow, padHigh, op.getInteriorPadding());
 
-    // Then slice according to the negative edge padding. Static shapes only for
-    // now.
-    if (!op.getType().hasStaticShape()) return failure();
-    auto sizes = llvm::map_to_vector(op.getType().getShape(),
-                                     [&](int64_t dim) -> OpFoldResult {
-                                       return rewriter.getIndexAttr(dim);
-                                     });
+    // Then slice according to the negative edge padding. A dynamic size is the
+    // padded size less what both negative edges crop.
+    SmallVector<OpFoldResult> sizes;
+    for (auto [dim, size] : llvm::enumerate(op.getType().getShape())) {
+      if (!ShapedType::isDynamic(size)) {
+        sizes.push_back(rewriter.getIndexAttr(size));
+        continue;
+      }
+      int64_t crop = std::max<int64_t>(-op.getEdgePaddingLow()[dim], 0) +
+                     std::max<int64_t>(-op.getEdgePaddingHigh()[dim], 0);
+      Value padded = tensor::DimOp::create(rewriter, op.getLoc(), pad, dim);
+      sizes.push_back(arith::SubIOp::create(rewriter, op.getLoc(), padded,
+                                            arith::ConstantIndexOp::create(
+                                                rewriter, op.getLoc(), crop))
+                          .getResult());
+    }
     SmallVector<OpFoldResult> strides(sliceStarts.size(),
                                       rewriter.getIndexAttr(1));
     rewriter.replaceOpWithNewOp<tensor::ExtractSliceOp>(op, pad, sliceStarts,
