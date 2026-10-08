@@ -1571,6 +1571,24 @@ func.func @reduce_precision(%arg0: tensor<1x2x3x4xf32>)
 
 // -----
 
+// A dynamic result takes its extents from the operand.
+// CHECK-LABEL: func @reduce_precision_dynamic(
+// CHECK-SAME:    %[[ARG:[a-zA-Z0-9_]*]]
+// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[DIM:.*]] = tensor.dim %[[ARG]], %[[C0]] : tensor<?x3xf32>
+// CHECK: %[[INIT:.*]] = tensor.empty(%[[DIM]]) : tensor<?x3xf32>
+// CHECK: linalg.generic
+// CHECK-SAME: outs(%[[INIT]] : tensor<?x3xf32>)
+
+// CHECK-PRIMITIVE-LABEL: func @reduce_precision_dynamic(
+// CHECK-PRIMITIVE: linalg.map
+func.func @reduce_precision_dynamic(%arg0: tensor<?x3xf32>) -> tensor<?x3xf32> {
+  %0 = stablehlo.reduce_precision %arg0, format = e8m7 : tensor<?x3xf32>
+  return %0 : tensor<?x3xf32>
+}
+
+// -----
+
 // CHECK-LABEL: func @integer_not
 // CHECK-SAME:    (%[[ARG:.+]]: tensor<2x2xi32>)
 // CHECK-PRIMITIVE-LABEL: func @integer_not
