@@ -902,6 +902,26 @@ func.func @real_dynamic_slice_with_int(%arg0: tensor<10xi32> , %arg1: tensor<1xi
 
 // -----
 
+// Unsigned start, limit and stride values above the signed range of their type
+// are read as unsigned.
+// CHECK-LABEL: func @real_dynamic_slice_unsigned
+// CHECK-SAME:    %[[OPERAND:[a-zA-Z0-9_]*]]
+// CHECK:         %[[START:.*]] = arith.index_castui %{{.*}} : i8 to index
+// CHECK:         %[[LIMIT:.*]] = arith.index_castui %{{.*}} : i8 to index
+// CHECK:         %[[STRIDE:.*]] = arith.index_castui %{{.*}} : i8 to index
+// CHECK:         %[[DELTA:.*]] = arith.subi %[[LIMIT]], %[[START]] : index
+// CHECK:         %[[SIZE:.*]] = arith.ceildivui %[[DELTA]], %[[STRIDE]] : index
+// CHECK:         %[[UB:.*]] = arith.subi %{{.*}}, %[[SIZE]] : index
+// CHECK:         %[[OFFSET:.*]] = arith.minui %[[START]], %[[UB]] : index
+// CHECK-NOT:     arith.maxsi
+// CHECK:         tensor.extract_slice %[[OPERAND]][%[[OFFSET]], %{{.*}}] [%[[SIZE]], %{{.*}}] [%[[STRIDE]], %{{.*}}]
+func.func @real_dynamic_slice_unsigned(%operand: tensor<200x?xf32>, %start: tensor<2xui8>, %limit: tensor<2xui8>, %strides: tensor<2xui8>) -> tensor<?x?xf32> {
+  %0 = stablehlo.real_dynamic_slice %operand, %start, %limit, %strides : (tensor<200x?xf32>, tensor<2xui8>, tensor<2xui8>, tensor<2xui8>) -> tensor<?x?xf32>
+  func.return %0 : tensor<?x?xf32>
+}
+
+// -----
+
 // CHECK-LABEL: func @reshape_0D_1D
 func.func @reshape_0D_1D(%arg0: tensor<i32>) -> tensor<1xi32> {
   %0 = "stablehlo.reshape"(%arg0) : (tensor<i32>) -> tensor<1xi32>
