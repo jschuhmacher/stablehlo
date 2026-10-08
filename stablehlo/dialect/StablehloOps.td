@@ -3688,7 +3688,7 @@ def StableHLO_UniformDequantizeOp : StableHLO_UnaryElementwiseOp<"uniform_dequan
 
 def StableHLO_ReducePrecisionOp : StableHLO_Op<"reduce_precision",
       [HLO_SpeculatableIfStaticDimInOutputIsStaticInInput, NoMemoryEffect,
-       Elementwise,
+       Elementwise, InferShapedTypeOpInterface,
        HLO_CompatibleOperandsAndResultType /*reduce_precision_c1*/]> {
   let summary = "ReducePrecision operation";
   let description = [{
@@ -3710,6 +3710,16 @@ def StableHLO_ReducePrecisionOp : StableHLO_Op<"reduce_precision",
     ConfinedAttr<I32Attr, [IntNonNegative]>:$mantissa_bits /*reduce_precision_c3, reduce_precision_i3*/
   );
   let results = (outs HLO_FpOrQuantizedIntTensor:$output);
+
+  let extraClassDeclaration = commonClassDeclaration # [{
+    LogicalResult reifyReturnTypeShapes(
+        OpBuilder& builder, ValueRange operands,
+        SmallVectorImpl<Value>& reifiedReturnShapes) {
+      return ::mlir::hlo::deriveShapeFromOperand(&builder, getOperation(),
+                                                operands.front(),
+                                                &reifiedReturnShapes);
+    }
+  }];
 
   let assemblyFormat = [{
     $operand `,` `format` `=` custom<ExponentMantissa>($exponent_bits, $mantissa_bits)
