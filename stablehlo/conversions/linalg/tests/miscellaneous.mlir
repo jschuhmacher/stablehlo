@@ -848,6 +848,29 @@ func.func @pad_interior_negative(%arg0: tensor<12x4xui32>, %arg1: tensor<ui32>) 
 
 // -----
 
+func.func @pad_interior_negative_dynamic(%arg0: tensor<?x?xf32>, %arg1: tensor<f32>) -> tensor<?x?xf32> {
+  %0 = stablehlo.pad %arg0, %arg1, low = [1, -1], high = [-2, 3], interior = [0, 1] : (tensor<?x?xf32>, tensor<f32>) -> tensor<?x?xf32>
+  func.return %0 : tensor<?x?xf32>
+}
+// The crop sizes are the padded sizes less the negated negative edges.
+// CHECK-LABEL: func @pad_interior_negative_dynamic
+//   CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
+//   CHECK-DAG: %[[C3:.*]] = arith.constant 3 : index
+//   CHECK-DAG: %[[M1:.*]] = arith.constant -1 : index
+//       CHECK: %[[D0:.*]] = tensor.dim %arg0, %c0
+//       CHECK: %[[P0:.*]] = arith.addi %[[D0]], %[[C1]]
+//       CHECK: %[[D1:.*]] = tensor.dim %arg0, %c1
+//       CHECK: %[[GAPS:.*]] = arith.maxsi
+//       CHECK: %[[DILATED:.*]] = arith.addi %[[D1]], %[[GAPS]]
+//       CHECK: %[[P1:.*]] = arith.addi %[[DILATED]], %[[C3]]
+//       CHECK: %[[EMPTY:.*]] = tensor.empty(%[[P0]], %[[P1]])
+//       CHECK: %[[PAD:.*]] = tensor.insert_slice %arg0 into %{{.+}}[1, 0] [%{{.+}}, %{{.+}}] [1, 2]
+//       CHECK: %[[S0:.*]] = arith.addi %[[D0]], %[[M1]]
+//       CHECK: %[[S1:.*]] = arith.addi %[[DILATED]], %c2
+//       CHECK: tensor.extract_slice %[[PAD]][0, 1] [%[[S0]], %[[S1]]] [1, 1] : tensor<?x?xf32> to tensor<?x?xf32>
+
+// -----
+
 // CHECK-LABEL: func @real_dynamic_slice
 // CHECK-SAME: (%[[OPERAND:.*]]: tensor<256x?xf32>, %[[START_INDICES:.*]]: tensor<2xindex>, %[[LIMIT_INDICES:.*]]: tensor<2xindex>, %[[STRIDES:.*]]: tensor<2xindex>)
 func.func @real_dynamic_slice(%input: tensor<256x?xf32>, %start_indices: tensor<2xindex>, %limit_indices: tensor<2xindex>, %strides: tensor<2xindex>) -> tensor<256x?xf32> {
