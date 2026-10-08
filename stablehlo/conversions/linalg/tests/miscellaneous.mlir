@@ -1466,16 +1466,16 @@ func.func @dynamic_slice(%arg: tensor<3x4xf32>, %start1: tensor<i64>, %start2: t
   } : (tensor<3x4xf32>, tensor<i64>, tensor<i64>) -> tensor<1x4xf32>
   func.return %0 : tensor<1x4xf32>
 }
-// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG:     %[[C2:.*]] = arith.constant 2 : index
+// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG:     %[[C2:.*]] = arith.constant 2 : i64
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract %[[ARG1]][] : tensor<i64>
-// CHECK:         %[[SCALAR1:.*]] = arith.index_cast %[[EXTRACT1]]
-// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : index
-// CHECK:         %[[CLAMPED1:.*]] = arith.minsi %[[T1]], %[[C2]] : index
+// CHECK:         %[[T1:.*]] = arith.maxsi %[[EXTRACT1]], %[[C0]] : i64
+// CHECK:         %[[MIN1:.*]] = arith.minsi %[[T1]], %[[C2]] : i64
+// CHECK:         %[[CLAMPED1:.*]] = arith.index_cast %[[MIN1]] : i64 to index
 // CHECK:         %[[EXTRACT2:.*]] = tensor.extract %[[ARG2]][] : tensor<i64>
-// CHECK:         %[[SCALAR2:.*]] = arith.index_cast %[[EXTRACT2]]
-// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : index
-// CHECK:         %[[CLAMPED2:.*]] = arith.minsi %[[T2]], %[[C0]] : index
+// CHECK:         %[[T2:.*]] = arith.maxsi %[[EXTRACT2]], %[[C0]] : i64
+// CHECK:         %[[MIN2:.*]] = arith.minsi %[[T2]], %[[C0]] : i64
+// CHECK:         %[[CLAMPED2:.*]] = arith.index_cast %[[MIN2]] : i64 to index
 // CHECK:           tensor.extract_slice %[[ARG0]][%[[CLAMPED1]], %[[CLAMPED2]]] [1, 4] [1, 1]
 
 // -----
@@ -1490,16 +1490,17 @@ func.func @dynamic_slice_unsigned_index(
   func.return %0 : tensor<1x4xui32>
 }
 
-// An unsigned start index clamps with an unsigned minimum alone.
+// An unsigned start index clamps with an unsigned minimum alone, before the
+// cast to index.
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract
-// CHECK:         %[[INDEX1:.*]] = arith.index_castui %[[EXTRACT1]]
 // CHECK-NOT:     arith.maxsi
-// CHECK:         arith.minui %[[INDEX1]]
+// CHECK:         %[[MIN1:.*]] = arith.minui %[[EXTRACT1]], %{{.*}} : i64
+// CHECK:         arith.index_cast %[[MIN1]] : i64 to index
 
 // -----
 
-// CHECK-LABEL: func @dynamic_update_slice_unsigned_index(
-func.func @dynamic_update_slice_unsigned_index(
+// CHECK-LABEL: func @dynamic_update_slice_unsigned_index_ui64(
+func.func @dynamic_update_slice_unsigned_index_ui64(
     %target: tensor<5x3xi32>, %update: tensor<2x3xi32>, %start1: tensor<ui64>,
     %start2: tensor<ui64>) -> tensor<5x3xi32> {
   %0 = "stablehlo.dynamic_update_slice"(%target, %update, %start1, %start2)
@@ -1509,9 +1510,9 @@ func.func @dynamic_update_slice_unsigned_index(
 }
 
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract
-// CHECK:         %[[INDEX1:.*]] = arith.index_castui %[[EXTRACT1]]
 // CHECK-NOT:     arith.maxsi
-// CHECK:         arith.minui %[[INDEX1]]
+// CHECK:         %[[MIN1:.*]] = arith.minui %[[EXTRACT1]], %{{.*}} : i64
+// CHECK:         arith.index_cast %[[MIN1]] : i64 to index
 // CHECK:         tensor.insert_slice
 
 // -----
@@ -1527,17 +1528,17 @@ func.func @dynamic_slice_unsigned(%arg: tensor<3x4xui32>, %start1: tensor<i64>, 
   func.return %0 : tensor<1x4xui32>
 }
 
-// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG:     %[[C2:.*]] = arith.constant 2 : index
+// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG:     %[[C2:.*]] = arith.constant 2 : i64
 // CHECK:         %[[SIGNLESS_ARG0:.*]] = builtin.unrealized_conversion_cast %[[ARG0]] : tensor<3x4xui32> to tensor<3x4xi32>
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract %[[ARG1]][] : tensor<i64>
-// CHECK:         %[[SCALAR1:.*]] = arith.index_cast %[[EXTRACT1]]
-// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : index
-// CHECK:         %[[CLAMPED1:.*]] = arith.minsi %[[T1]], %[[C2]] : index
+// CHECK:         %[[T1:.*]] = arith.maxsi %[[EXTRACT1]], %[[C0]] : i64
+// CHECK:         %[[MIN1:.*]] = arith.minsi %[[T1]], %[[C2]] : i64
+// CHECK:         %[[CLAMPED1:.*]] = arith.index_cast %[[MIN1]] : i64 to index
 // CHECK:         %[[EXTRACT2:.*]] = tensor.extract %[[ARG2]][] : tensor<i64>
-// CHECK:         %[[SCALAR2:.*]] = arith.index_cast %[[EXTRACT2]]
-// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : index
-// CHECK:         %[[CLAMPED2:.*]] = arith.minsi %[[T2]], %[[C0]] : index
+// CHECK:         %[[T2:.*]] = arith.maxsi %[[EXTRACT2]], %[[C0]] : i64
+// CHECK:         %[[MIN2:.*]] = arith.minsi %[[T2]], %[[C0]] : i64
+// CHECK:         %[[CLAMPED2:.*]] = arith.index_cast %[[MIN2]] : i64 to index
 // CHECK:           tensor.extract_slice %[[SIGNLESS_ARG0]][%[[CLAMPED1]], %[[CLAMPED2]]] [1, 4] [1, 1]
 
 // -----
@@ -1551,16 +1552,18 @@ func.func @dynamic_update_slice(%target: tensor<3x3xi32>, %update: tensor<2x2xi3
     : (tensor<3x3xi32>, tensor<2x2xi32>, tensor<i32>, tensor<i32>) -> tensor<3x3xi32>
   func.return %0 : tensor<3x3xi32>
 }
-// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG:     %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG:     %[[C1:.*]] = arith.constant 1 : i64
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract %[[ARG2]][] : tensor<i32>
-// CHECK:         %[[SCALAR1:.*]] = arith.index_cast %[[EXTRACT1]]
-// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : index
-// CHECK:         %[[CLAMPED1:.*]] = arith.minsi %[[T1]], %[[C1]] : index
+// CHECK:         %[[SCALAR1:.*]] = arith.extsi %[[EXTRACT1]] : i32 to i64
+// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : i64
+// CHECK:         %[[MIN1:.*]] = arith.minsi %[[T1]], %[[C1]] : i64
+// CHECK:         %[[CLAMPED1:.*]] = arith.index_cast %[[MIN1]] : i64 to index
 // CHECK:         %[[EXTRACT2:.*]] = tensor.extract %[[ARG2]][] : tensor<i32>
-// CHECK:         %[[SCALAR2:.*]] = arith.index_cast %[[EXTRACT2]]
-// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : index
-// CHECK:         %[[CLAMPED2:.*]] = arith.minsi %[[T2]], %[[C1]] : index
+// CHECK:         %[[SCALAR2:.*]] = arith.extsi %[[EXTRACT2]] : i32 to i64
+// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : i64
+// CHECK:         %[[MIN2:.*]] = arith.minsi %[[T2]], %[[C1]] : i64
+// CHECK:         %[[CLAMPED2:.*]] = arith.index_cast %[[MIN2]] : i64 to index
 // CHECK:         %[[RES:.*]] = tensor.insert_slice %[[ARG1]] into %[[ARG0]]
 // CHECK-SAME:      [%[[CLAMPED1]], %[[CLAMPED2]]] [2, 2] [1, 1]
 // CHECK-SAME:    : tensor<2x2xi32> into tensor<3x3xi32>
@@ -1578,7 +1581,9 @@ func.func @dynamic_update_slice_unsigned_index(
 }
 
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract
-// CHECK:         arith.index_castui %[[EXTRACT1]]
+// CHECK:         %[[WIDE1:.*]] = arith.extui %[[EXTRACT1]] : i32 to i64
+// CHECK:         %[[MIN1:.*]] = arith.minui %[[WIDE1]], %{{.*}} : i64
+// CHECK:         arith.index_cast %[[MIN1]] : i64 to index
 
 // -----
 
@@ -1591,18 +1596,20 @@ func.func @dynamic_update_slice_unsigned(%target: tensor<3x3xui32>, %update: ten
     : (tensor<3x3xui32>, tensor<2x2xui32>, tensor<i32>, tensor<i32>) -> tensor<3x3xui32>
   func.return %0 : tensor<3x3xui32>
 }
-// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG:     %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG:     %[[C1:.*]] = arith.constant 1 : i64
 // CHECK-DAG:     %[[SIGNLESS_UPDATE:.*]] = builtin.unrealized_conversion_cast %[[ARG1]] : tensor<2x2xui32> to tensor<2x2xi32>
 // CHECK-DAG:     %[[SIGNLESS_TARGET:.*]] = builtin.unrealized_conversion_cast %[[ARG0]] : tensor<3x3xui32> to tensor<3x3xi32>
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract %[[ARG2]][] : tensor<i32>
-// CHECK:         %[[SCALAR1:.*]] = arith.index_cast %[[EXTRACT1]]
-// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : index
-// CHECK:         %[[CLAMPED1:.*]] = arith.minsi %[[T1]], %[[C1]] : index
+// CHECK:         %[[SCALAR1:.*]] = arith.extsi %[[EXTRACT1]] : i32 to i64
+// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : i64
+// CHECK:         %[[MIN1:.*]] = arith.minsi %[[T1]], %[[C1]] : i64
+// CHECK:         %[[CLAMPED1:.*]] = arith.index_cast %[[MIN1]] : i64 to index
 // CHECK:         %[[EXTRACT2:.*]] = tensor.extract %[[ARG2]][] : tensor<i32>
-// CHECK:         %[[SCALAR2:.*]] = arith.index_cast %[[EXTRACT2]]
-// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : index
-// CHECK:         %[[CLAMPED2:.*]] = arith.minsi %[[T2]], %[[C1]] : index
+// CHECK:         %[[SCALAR2:.*]] = arith.extsi %[[EXTRACT2]] : i32 to i64
+// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : i64
+// CHECK:         %[[MIN2:.*]] = arith.minsi %[[T2]], %[[C1]] : i64
+// CHECK:         %[[CLAMPED2:.*]] = arith.index_cast %[[MIN2]] : i64 to index
 // CHECK:         %[[SIGNLESS_RES:.*]] = tensor.insert_slice %[[SIGNLESS_UPDATE]] into %[[SIGNLESS_TARGET]]
 // CHECK-SAME:      [%[[CLAMPED1]], %[[CLAMPED2]]] [2, 2] [1, 1]
 // CHECK-SAME:    : tensor<2x2xi32> into tensor<3x3xi32>
@@ -1622,16 +1629,18 @@ func.func @dynamic_update_slice_float(%target: tensor<3x3xf32>,
     : (tensor<3x3xf32>, tensor<2x2xf32>, tensor<i32>, tensor<i32>) -> tensor<3x3xf32>
   func.return %0 : tensor<3x3xf32>
 }
-// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG:     %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG:     %[[C0:.*]] = arith.constant 0 : i64
+// CHECK-DAG:     %[[C1:.*]] = arith.constant 1 : i64
 // CHECK:         %[[EXTRACT1:.*]] = tensor.extract %[[ARG2]][] : tensor<i32>
-// CHECK:         %[[SCALAR1:.*]] = arith.index_cast %[[EXTRACT1]]
-// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : index
-// CHECK:         %[[CLAMPED1:.*]] = arith.minsi %[[T1]], %[[C1]] : index
+// CHECK:         %[[SCALAR1:.*]] = arith.extsi %[[EXTRACT1]] : i32 to i64
+// CHECK:         %[[T1:.*]] = arith.maxsi %[[SCALAR1]], %[[C0]] : i64
+// CHECK:         %[[MIN1:.*]] = arith.minsi %[[T1]], %[[C1]] : i64
+// CHECK:         %[[CLAMPED1:.*]] = arith.index_cast %[[MIN1]] : i64 to index
 // CHECK:         %[[EXTRACT2:.*]] = tensor.extract %[[ARG2]][] : tensor<i32>
-// CHECK:         %[[SCALAR2:.*]] = arith.index_cast %[[EXTRACT2]]
-// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : index
-// CHECK:         %[[CLAMPED2:.*]] = arith.minsi %[[T2]], %[[C1]] : index
+// CHECK:         %[[SCALAR2:.*]] = arith.extsi %[[EXTRACT2]] : i32 to i64
+// CHECK:         %[[T2:.*]] = arith.maxsi %[[SCALAR2]], %[[C0]] : i64
+// CHECK:         %[[MIN2:.*]] = arith.minsi %[[T2]], %[[C1]] : i64
+// CHECK:         %[[CLAMPED2:.*]] = arith.index_cast %[[MIN2]] : i64 to index
 // CHECK:         %[[RES:.*]] = tensor.insert_slice %[[ARG1]] into %[[ARG0]]
 // CHECK-SAME:      [%[[CLAMPED1]], %[[CLAMPED2]]] [2, 2] [1, 1]
 // CHECK-SAME:    : tensor<2x2xf32> into tensor<3x3xf32>
