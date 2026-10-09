@@ -3587,7 +3587,8 @@ LogicalResult inferTriangularSolveOp(
     std::optional<Location> location, Value a, Value b, bool leftSide,
     bool isTransposeAInvalid,
     SmallVectorImpl<ShapedTypeComponents>& inferredReturnShapes) {
-  // ODS enforces that a and b are of same element type: float or complex.
+  // ODS enforces that a and b are of same element type: float, complex or
+  // per-tensor quantized.
   auto aType = cast<RankedTensorType>(a.getType());
   auto aRank = aType.getRank();
   if (aRank < 2)

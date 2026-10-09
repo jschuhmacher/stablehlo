@@ -3384,14 +3384,14 @@ def StableHLO_TriangularSolveOp: StableHLO_Op<"triangular_solve",
     ```
   }];
   let arguments = (ins
-    HLO_FpOrComplexTensor:$a,
-    HLO_FpOrComplexTensor:$b,
+    HLO_FpComplexOrQuantizedIntTensor:$a,
+    HLO_FpComplexOrQuantizedIntTensor:$b,
     BoolAttr:$left_side,
     BoolAttr:$lower,
     BoolAttr:$unit_diagonal,
     StableHLO_TransposeAttr:$transpose_a
   );
-  let results = (outs HLO_FpOrComplexTensor);
+  let results = (outs HLO_FpComplexOrQuantizedIntTensor);
 
   let extraClassDeclaration = commonClassDeclaration # [{
     /// Interface method for ConditionallySpeculatable.
