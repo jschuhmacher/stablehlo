@@ -538,6 +538,22 @@ func.func @sort_per_tensor_quantization(%input0: tensor<16x16x!quant.uniform<i8:
 
 // -----
 
+// CHECK-LABEL: @triangular_solve_per_tensor_quantization
+func.func @triangular_solve_per_tensor_quantization(%a: tensor<3x4x4x!quant.uniform<i8:f32, 0.5:2>>, %b: tensor<3x6x4x!quant.uniform<i8:f32, 0.25:-3>>) -> tensor<3x6x4x!quant.uniform<i8:f32, 0.125:7>> {
+  %0 = "stablehlo.triangular_solve"(%a, %b) {
+    left_side = false, lower = false, unit_diagonal = true,
+    transpose_a = #stablehlo<transpose TRANSPOSE>
+  } : (tensor<3x4x4x!quant.uniform<i8:f32, 0.5:2>>, tensor<3x6x4x!quant.uniform<i8:f32, 0.25:-3>>) -> tensor<3x6x4x!quant.uniform<i8:f32, 0.125:7>>
+  func.return %0 : tensor<3x6x4x!quant.uniform<i8:f32, 0.125:7>>
+}
+
+// CHECK: %[[A:.*]] = stablehlo.uniform_dequantize %arg0 : (tensor<3x4x4x!quant.uniform<i8:f32, 5.000000e-01:2>>) -> tensor<3x4x4xf32>
+// CHECK-NEXT: %[[B:.*]] = stablehlo.uniform_dequantize %arg1 : (tensor<3x6x4x!quant.uniform<i8:f32, 2.500000e-01:-3>>) -> tensor<3x6x4xf32>
+// CHECK-NEXT: %[[X:.*]] = "stablehlo.triangular_solve"(%[[A]], %[[B]]) <{left_side = false, lower = false, transpose_a = #stablehlo<transpose TRANSPOSE>, unit_diagonal = true}> : (tensor<3x4x4xf32>, tensor<3x6x4xf32>) -> tensor<3x6x4xf32>
+// CHECK-NEXT: stablehlo.uniform_quantize %[[X]] : (tensor<3x6x4xf32>) -> tensor<3x6x4x!quant.uniform<i8:f32, 1.250000e-01:7>>
+
+// -----
+
 // CHECK-LABEL: @while_per_tensor_quantization
 func.func @while_per_tensor_quantization(%arg0: tensor<4x!quant.uniform<i8:f32, 1.0:17>>) -> tensor<?x!quant.uniform<i8:f32, 1.0:17>> {
   %while = "stablehlo.while"(%arg0) ({

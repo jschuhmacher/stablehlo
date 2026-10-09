@@ -680,6 +680,28 @@ func.func @negative_tanh_quantization(%arg0: tensor<1x2x2x!quant.uniform<i8:f32:
 
 // -----
 
+func.func @negative_triangular_solve_quantization(%a: tensor<3x4x4x!quant.uniform<i8:f32:0, {0.1:-30, 0.2:-20, 0.3:-10}>>, %b: tensor<3x4x6x!quant.uniform<i8:f32, 0.25:-3>>) {
+  // expected-error-re@+1 {{operand #0 must be ranked tensor of {{.*}}, but got 'tensor<3x4x4x!quant.uniform<i8:f32:0, {{.*}}>>'}}
+  %0 = "stablehlo.triangular_solve"(%a, %b) {
+    left_side = true, lower = true, unit_diagonal = false,
+    transpose_a = #stablehlo<transpose NO_TRANSPOSE>
+  } : (tensor<3x4x4x!quant.uniform<i8:f32:0, {0.1:-30, 0.2:-20, 0.3:-10}>>, tensor<3x4x6x!quant.uniform<i8:f32, 0.25:-3>>) -> tensor<3x4x6x!quant.uniform<i8:f32, 0.25:-3>>
+  func.return
+}
+
+// -----
+
+// CHECK-LABEL: @triangular_solve_per_tensor_quantization
+func.func @triangular_solve_per_tensor_quantization(%a: tensor<3x4x4x!quant.uniform<i8:f32, 0.5:2>>, %b: tensor<3x4x6x!quant.uniform<i8:f32, 0.25:-3>>) -> tensor<3x4x6x!quant.uniform<i8:f32, 0.125:7>> {
+  %0 = "stablehlo.triangular_solve"(%a, %b) {
+    left_side = true, lower = true, unit_diagonal = false,
+    transpose_a = #stablehlo<transpose NO_TRANSPOSE>
+  } : (tensor<3x4x4x!quant.uniform<i8:f32, 0.5:2>>, tensor<3x4x6x!quant.uniform<i8:f32, 0.25:-3>>) -> tensor<3x4x6x!quant.uniform<i8:f32, 0.125:7>>
+  func.return %0 : tensor<3x4x6x!quant.uniform<i8:f32, 0.125:7>>
+}
+
+// -----
+
 func.func @negative_batch_norm_grad_quantization(%input: tensor<2x2x2x2x!quant.uniform<i8:f32:0, {0.1:-30}>>, %scale: tensor<2x!quant.uniform<i8:f32:0, {0.1:-30}>>, %mean: tensor<2x!quant.uniform<i8:f32:0, {0.1:-30}>>, %variance: tensor<2x!quant.uniform<i8:f32:0, {0.1:-30}>>, %grad_output: tensor<2x2x2x2x!quant.uniform<i8:f32:0, {0.1:-30}>>) -> tensor<2x2x2x2x!quant.uniform<i8:f32:0, {0.1:-30}>> {
   // expected-error-re@+1 {{operand #0 must be ranked tensor of {{.*}}, but got 'tensor<2x2x2x2x!quant.uniform<i8:f32:0, {1.000000e-01:-30}>>'}}
   %0:3 = "stablehlo.batch_norm_grad" (%input, %scale, %mean, %variance, %grad_output)
