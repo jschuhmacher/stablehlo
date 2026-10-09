@@ -153,6 +153,13 @@ Type getQuantStorageType(Type type) {
   if (auto shaped = dyn_cast<ShapedType>(type)) {
     return shaped.clone(getQuantStorageType(shaped.getElementType()));
   }
+  if (auto future = dyn_cast<FutureType>(type)) {
+    SmallVector<Type> types;
+    for (Type element : future.getTypes()) {
+      types.push_back(getQuantStorageType(element));
+    }
+    return FutureType::get(type.getContext(), types);
+  }
 
   auto quantizedType = getQuantType(type);
   if (succeeded(quantizedType)) {
@@ -1344,7 +1351,8 @@ class ConvertGenericOp : public ConversionPattern {
       Operation* op, ArrayRef<Value> operands,
       ConversionPatternRewriter& rewriter) const override {
     // This pattern only handle selected ops.
-    if (!isa<stablehlo::BitcastConvertOp, stablehlo::BroadcastInDimOp,
+    if (!isa<stablehlo::AsyncDoneOp, stablehlo::AsyncStartOp,
+             stablehlo::BitcastConvertOp, stablehlo::BroadcastInDimOp,
              stablehlo::CompositeOp, stablehlo::ConcatenateOp,
              stablehlo::ConstantOp, stablehlo::DynamicReshapeOp,
              stablehlo::DynamicSliceOp, stablehlo::GatherOp, stablehlo::MaxOp,
