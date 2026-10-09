@@ -2124,6 +2124,32 @@ func.func @slice(
 
 // -----
 
+// An async slice keeps its storage type through the future.
+// CHECK-LABEL: func @async_slice
+// CHECK: %[[F:.+]] = "stablehlo.async_start"(%{{.+}}) ({
+// CHECK: ^bb0(%[[X:.+]]: tensor<6x4xi8>):
+// CHECK: stablehlo.slice %[[X]]
+// CHECK-SAME: (tensor<6x4xi8>) -> tensor<2x4xi8>
+// CHECK: }) : (tensor<6x4xi8>) -> !stablehlo.future<tensor<2x4xi8>>
+// CHECK: "stablehlo.async_done"(%[[F]]) : (!stablehlo.future<tensor<2x4xi8>>) -> tensor<2x4xi8>
+func.func @async_slice(
+    %arg0: tensor<6x4x!quant.uniform<i8:f32, 0.5:3>>
+  ) -> tensor<2x4x!quant.uniform<i8:f32, 0.5:3>> {
+  %f = "stablehlo.async_start"(%arg0) ({
+    ^bb0(%x: tensor<6x4x!quant.uniform<i8:f32, 0.5:3>>):
+      %s = "stablehlo.slice"(%x) {
+        start_indices = array<i64: 1, 0>,
+        limit_indices = array<i64: 3, 4>,
+        strides = array<i64: 1, 1>
+      } : (tensor<6x4x!quant.uniform<i8:f32, 0.5:3>>) -> tensor<2x4x!quant.uniform<i8:f32, 0.5:3>>
+      "stablehlo.return"(%s) : (tensor<2x4x!quant.uniform<i8:f32, 0.5:3>>) -> ()
+  }) : (tensor<6x4x!quant.uniform<i8:f32, 0.5:3>>) -> !stablehlo.future<tensor<2x4x!quant.uniform<i8:f32, 0.5:3>>>
+  %o = "stablehlo.async_done"(%f) : (!stablehlo.future<tensor<2x4x!quant.uniform<i8:f32, 0.5:3>>>) -> tensor<2x4x!quant.uniform<i8:f32, 0.5:3>>
+  return %o : tensor<2x4x!quant.uniform<i8:f32, 0.5:3>>
+}
+
+// -----
+
 // CHECK-LABEL: func @dynamic_slice
 func.func @dynamic_slice(
     %arg0: tensor<?x4x!quant.uniform<i8:f32, 0.13170163023705575:-1>>,
