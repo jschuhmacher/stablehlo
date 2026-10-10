@@ -5305,6 +5305,21 @@ func.func @custom_call_output_operand_alias_mismatch_operand_index(%arg0: tuple<
 
 // -----
 
+func.func @custom_call_output_operand_alias_without_result(%arg0: tensor<4x3xf32>) {
+  // expected-error@+1 {{output_operand_aliases requires a result}}
+  "stablehlo.custom_call"(%arg0) {
+    call_target_name = "foo",
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [],
+                                 operand_index = 0,
+                                 operand_tuple_indices = []>
+    ]
+  } : (tensor<4x3xf32>) -> ()
+  func.return
+}
+
+// -----
+
 func.func @custom_call_invalid_output_tuple_indices(%arg0: tuple<tensor<1x1xf32>, tensor<2x3xf32>>, %arg1: tensor<5x5xf32>) {
   // expected-error@+1 {{output_tuple_indices in the output_operand_alias attribute out of bounds}}
   %0 = "stablehlo.custom_call"(%arg0, %arg1) {
