@@ -1560,6 +1560,24 @@ func.func @dynamic_update_slice_unsigned_index_ui64(
 
 // -----
 
+// CHECK-LABEL: func @dynamic_update_slice_dynamic(
+// CHECK-SAME:    %[[TARGET:[a-zA-Z0-9_]*]]
+// CHECK-SAME:    %[[UPDATE:[a-zA-Z0-9_]*]]
+func.func @dynamic_update_slice_dynamic(
+    %target: tensor<?x5xf32>, %update: tensor<2x?xf32>, %start1: tensor<i64>,
+    %start2: tensor<i64>) -> tensor<?x5xf32> {
+  %0 = "stablehlo.dynamic_update_slice"(%target, %update, %start1, %start2)
+      : (tensor<?x5xf32>, tensor<2x?xf32>, tensor<i64>, tensor<i64>)
+      -> tensor<?x5xf32>
+  func.return %0 : tensor<?x5xf32>
+}
+
+// CHECK-DAG:     tensor.dim %[[TARGET]], %c0
+// CHECK-DAG:     %[[UPDATE_COLS:.*]] = tensor.dim %[[UPDATE]], %c1
+// CHECK:         tensor.insert_slice %[[UPDATE]] into %[[TARGET]][%{{.*}}, %{{.*}}] [2, %[[UPDATE_COLS]]] [1, 1]
+
+// -----
+
 // CHECK-LABEL: func @dynamic_slice_unsigned(
 // CHECK-SAME:    %[[ARG0:[a-zA-Z0-9_]*]]
 // CHECK-SAME:    %[[ARG1:[a-zA-Z0-9_]*]]
