@@ -511,6 +511,8 @@ LogicalResult CustomCallOp::verify() {
   // Check output_operand_aliases
 
   auto aliasArrayAttr = getOutputOperandAliases();
+  if (!aliasArrayAttr.empty() && getNumResults() == 0)
+    return emitOpError() << "output_operand_aliases requires a result";
   for (auto attr : aliasArrayAttr) {
     auto alias = cast<OutputOperandAliasAttr>(attr);
     auto outputTupleIndices = alias.getOutputTupleIndices();
