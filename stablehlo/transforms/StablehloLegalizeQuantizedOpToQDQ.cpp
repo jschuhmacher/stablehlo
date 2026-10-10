@@ -147,7 +147,8 @@ void populateStablehloLegalizeQuantizedOpToQDQPatterns(
     MLIRContext* context, RewritePatternSet* patterns, PatternBenefit benefit) {
   populateStablehloLegalizeQuantizedOpToQDQPatterns<
       AbsOp, AddOp, Atan2Op, BatchNormGradOp, BatchNormInferenceOp,
-      BatchNormTrainingOp, CbrtOp, CeilOp, CholeskyOp, ClampOp, CompareOp,
+      BatchNormTrainingOp, CbrtOp, CeilOp, CholeskyOp, ClampOp,
+      CollectiveBroadcastOp, CollectivePermuteOp, CompareOp,
       ConvolutionOp, CosineOp, DivOp, DotGeneralOp, DotOp, Expm1Op, ExpOp,
       FloorOp, Log1pOp, LogisticOp, LogOp, MaxOp, MinOp, MulOp, NegOp, PowOp,
       ReducePrecisionOp, RemOp, RoundOp, RoundNearestEvenOp, RsqrtOp, SelectOp,

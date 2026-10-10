@@ -1351,7 +1351,9 @@ class ConvertGenericOp : public ConversionPattern {
       Operation* op, ArrayRef<Value> operands,
       ConversionPatternRewriter& rewriter) const override {
     // This pattern only handle selected ops.
-    if (!isa<stablehlo::AsyncDoneOp, stablehlo::AsyncStartOp,
+    if (!isa<stablehlo::AllGatherOp, stablehlo::AllReduceOp,
+             stablehlo::AllToAllOp, stablehlo::AsyncDoneOp,
+             stablehlo::AsyncStartOp, stablehlo::ReduceScatterOp,
              stablehlo::BitcastConvertOp, stablehlo::BroadcastInDimOp,
              stablehlo::CompositeOp, stablehlo::ConcatenateOp,
              stablehlo::ConstantOp, stablehlo::DynamicReshapeOp,
@@ -1402,6 +1404,79 @@ class ConvertGenericOp : public ConversionPattern {
   }
 };
 
+// Off the root the result is the zero point, found by a reduction of ones.
+class ConvertQuantizedCollectiveReduceOp
+    : public OpConversionPattern<stablehlo::CollectiveReduceOp> {
+ public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      stablehlo::CollectiveReduceOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter& rewriter) const override {
+    if (llvm::none_of(op->getResultTypes(), isPerTensorType)) {
+      return rewriter.notifyMatchFailure(op, "no per-tensor quantized result");
+    }
+    Location loc = op.getLoc();
+    SmallVector<Type> storageTypes;
+    for (Type type : op->getResultTypes()) {
+      storageTypes.push_back(getQuantStorageType(type));
+    }
+    auto reduce = stablehlo::CollectiveReduceOp::create(
+        rewriter, loc, storageTypes, adaptor.getOperands(), op->getAttrs());
+    rewriter.inlineRegionBefore(op.getComputation(), reduce.getComputation(),
+                                reduce.getComputation().end());
+    if (failed(rewriter.convertRegionTypes(&reduce.getComputation(),
+                                           *getTypeConverter()))) {
+      return failure();
+    }
+
+    auto scalarType = RankedTensorType::get({}, rewriter.getI32Type());
+    Value one = stablehlo::ConstantOp::create(
+        rewriter, loc, DenseElementsAttr::get(scalarType, 1));
+    SmallVector<Value> indicatorOperands(op->getNumResults(), one);
+    if (op.getHasDynamicRoot()) {
+      indicatorOperands.push_back(adaptor.getOperands().back());
+    }
+    auto indicator = stablehlo::CollectiveReduceOp::create(
+        rewriter, loc, SmallVector<Type>(op->getNumResults(), scalarType),
+        indicatorOperands, op->getAttrs());
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block* body = rewriter.createBlock(&indicator.getComputation(), {},
+                                         {scalarType, scalarType}, {loc, loc});
+      Value sum = stablehlo::AddOp::create(rewriter, loc, body->getArgument(0),
+                                           body->getArgument(1));
+      stablehlo::ReturnOp::create(rewriter, loc, sum);
+    }
+    Value zero = stablehlo::ConstantOp::create(
+        rewriter, loc, DenseElementsAttr::get(scalarType, 0));
+
+    SmallVector<Value> results;
+    for (auto [index, type] : llvm::enumerate(op->getResultTypes())) {
+      if (!isPerTensorType(type)) {
+        results.push_back(reduce.getResult(index));
+        continue;
+      }
+      quant::UniformQuantizedType quantType = getPerTensorType(type);
+      Value isRoot = stablehlo::CompareOp::create(
+          rewriter, loc, indicator.getResult(index), zero,
+          stablehlo::ComparisonDirection::NE);
+      auto storageType = cast<IntegerType>(quantType.getStorageType());
+      Value zeroPoint = stablehlo::ConstantOp::create(
+          rewriter, loc,
+          DenseElementsAttr::get(
+              RankedTensorType::get({}, storageType),
+              APInt(storageType.getWidth(), quantType.getZeroPoint(),
+                    quantType.isSigned())));
+      results.push_back(chlo::BroadcastSelectOp::create(
+          rewriter, loc, storageTypes[index], isRoot, reduce.getResult(index),
+          zeroPoint));
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 // TypeConverter for converting UQ type to int type.
 class UniformQuantizedToIntTypeConverter : public TypeConverter {
  public:
@@ -1423,6 +1498,28 @@ class StablehloLegalizeQuantToMathPass
   void runOnOperation() override {
     Operation* op = getOperation();
     MLIRContext* context = op->getContext();
+    // A reducing collective converts each operand to its computation's type.
+    op->walk([](Operation* collective) {
+      if (!isa<stablehlo::AllReduceOp, stablehlo::ReduceScatterOp,
+               stablehlo::CollectiveReduceOp>(collective)) {
+        return;
+      }
+      Type reducerType = getElementTypeOrSelf(
+          collective->getRegion(0).front().getArgument(0).getType());
+      if (!isPerTensorType(reducerType)) return;
+      OpBuilder builder(collective);
+      for (unsigned i = 0; i < collective->getNumResults(); ++i) {
+        Value operand = collective->getOperand(i);
+        auto operandType = cast<RankedTensorType>(operand.getType());
+        if (!isPerTensorType(operandType) ||
+            operandType.getElementType() == reducerType) {
+          continue;
+        }
+        collective->setOperand(i, stablehlo::UniformQuantizeOp::create(
+                                      builder, collective->getLoc(),
+                                      operandType.clone(reducerType), operand));
+      }
+    });
     RewritePatternSet patterns(context);
 
     // Populate stablehlo quant ops conversion patterns.
@@ -1438,6 +1535,8 @@ class StablehloLegalizeQuantToMathPass
     // uq->int convert patterns for func.func, func.return and generic ops.
     UniformQuantizedToIntTypeConverter converter;
     patterns.add<ConvertGenericOp>(context, converter, /*benefit=*/10);
+    patterns.add<ConvertQuantizedCollectiveReduceOp>(converter, context,
+                                                     /*benefit=*/10);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    converter);
     populateReturnOpTypeConversionPattern(patterns, converter);
