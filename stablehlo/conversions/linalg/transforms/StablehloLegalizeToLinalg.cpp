@@ -1625,25 +1625,12 @@ struct DynamicUpdateSliceConverter final
     Location loc = op.getLoc();
     auto operandType =
         llvm::cast<RankedTensorType>(adaptor.getOperand().getType());
-    if (!operandType.hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "require static ranked type for operand");
-    }
-
-    auto updateType =
-        llvm::cast<RankedTensorType>(adaptor.getUpdate().getType());
-    if (!updateType.hasStaticShape()) {
-      return rewriter.notifyMatchFailure(
-          op, "require static ranked type for operand");
-    }
 
     // We do not have to clamp sizes because the semantic of `update`
     // guarantees that it is always in the bounds. See
     // https://www.tensorflow.org/xla/operation_semantics#dynamicupdateslice
-    SmallVector<OpFoldResult, 3> sizes;
-    for (int64_t size : updateType.getShape()) {
-      sizes.push_back(rewriter.getIndexAttr(size));
-    }
+    SmallVector<OpFoldResult, 3> sizes =
+        tensor::getMixedSizes(rewriter, loc, adaptor.getUpdate());
 
     SmallVector<OpFoldResult, 3> startIndices;
     for (auto [idx, start] : llvm::enumerate(adaptor.getStartIndices())) {
@@ -1651,9 +1638,13 @@ struct DynamicUpdateSliceConverter final
       //   `start_indices[i] = clamp(start_indices[i],
       //       0, operand.dimension_size[i] - update.dimension_size[i])`
       auto startType = cast<ShapedType>(op.getStartIndices()[idx].getType());
-      Value ub = arith::ConstantIndexOp::create(
+      Value operandSize = getValueOrCreateConstantIndexOp(
           rewriter, loc,
-          operandType.getDimSize(idx) - updateType.getDimSize(idx));
+          tensor::getMixedSize(rewriter, loc, adaptor.getOperand(), idx));
+      Value updateSize =
+          getValueOrCreateConstantIndexOp(rewriter, loc, sizes[idx]);
+      Value ub =
+          rewriter.createOrFold<arith::SubIOp>(loc, operandSize, updateSize);
       startIndices.push_back(
           extractClampedStartIndex(rewriter, loc, start, startType, ub));
     }
