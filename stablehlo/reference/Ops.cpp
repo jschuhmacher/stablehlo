@@ -1497,7 +1497,7 @@ SmallVector<InterpreterValue> collectiveReduceOp(
   if (channelId <= 0 && !useGlobalDeviceIds)
     processGroups = process->crossReplica(replicaGroups);
   if (channelId > 0 && !useGlobalDeviceIds)
-    processGroups = process->crossReplicaAndPartition(replicaGroups);
+    processGroups = process->crossPartition(replicaGroups);
   if (channelId > 0 && useGlobalDeviceIds)
     processGroups = process->flattenedIds(replicaGroups);
 
