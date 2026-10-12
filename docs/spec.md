@@ -1972,7 +1972,7 @@ Afterwards, `results[j]@process` is given by:
 
 | Label | Name                    | Type                                                             | Constraints |
 |-------|-------------------------|------------------------------------------------------------------|-------------|
-| (I1)  | `operands`              | variadic number of tensors or per-tensor quantized tensors       | (C3)        |
+| (I1)  | `operands`              | variadic number of tensors or per-tensor quantized tensors       | (C3), (C5)  |
 | (I2)  | `replica_groups`        | variadic number of 1-dimensional tensor constants of type `si64` | (C1), (C2)  |
 | (I3)  | `channel_id`            | constant of type `si64`                                          |             |
 | (I4)  | `has_dynamic_root`      | constant of type `i1`                                            |             |
@@ -1996,6 +1996,8 @@ Afterwards, `results[j]@process` is given by:
     `num_elements(operands[size(operands)-1]) == size(operands)-1`.
 * (C4) `computation` has type `(tensor<E>, tensor<E>) -> (tensor<E>)` where
   `is_promotable(element_type(operand), E)`.
+* (C5) If `has_dynamic_root = true`:
+  `0 <= operands[size(operands)-1] < shape(replica_groups)[1]`.
 
 #### Examples
 
