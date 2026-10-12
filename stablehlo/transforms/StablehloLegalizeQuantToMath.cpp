@@ -1600,7 +1600,20 @@ SmallVector<Value> buildIsRoot(OpBuilder& builder, Location loc,
           builder.getDenseI64ArrayAttr({numGroups, 1}));
       Value roots =
           stablehlo::ReshapeOp::create(builder, loc, rootsType, column);
-      isRoot.push_back(buildIsOneOf(builder, loc, id, roots));
+      // dynamic_slice clamps the root; a root outside the group names no one.
+      Value groupEnd = stablehlo::ConstantOp::create(
+          builder, loc,
+          DenseElementsAttr::get(
+              indexType, APInt(indexType.getElementTypeBitWidth(), groupSize,
+                               /*isSigned=*/true)));
+      Value inGroup = stablehlo::AndOp::create(
+          builder, loc,
+          stablehlo::CompareOp::create(builder, loc, root, zero,
+                                       stablehlo::ComparisonDirection::GE),
+          stablehlo::CompareOp::create(builder, loc, root, groupEnd,
+                                       stablehlo::ComparisonDirection::LT));
+      isRoot.push_back(stablehlo::AndOp::create(
+          builder, loc, inGroup, buildIsOneOf(builder, loc, id, roots)));
     }
     return isRoot;
   }
