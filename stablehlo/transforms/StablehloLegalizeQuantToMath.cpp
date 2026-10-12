@@ -40,6 +40,7 @@ limitations under the License.
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/WalkPatternRewriteDriver.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/transforms/Passes.h"
@@ -1691,6 +1692,39 @@ class ConvertQuantizedCollectiveReduceOp
   }
 };
 
+// A reducing collective converts each operand to its computation's type.
+struct RequantizeReducingCollectiveOperands final : RewritePattern {
+  explicit RequantizeReducingCollectiveOperands(MLIRContext* context)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
+
+  LogicalResult matchAndRewrite(Operation* collective,
+                                PatternRewriter& rewriter) const override {
+    if (!isa<stablehlo::AllReduceOp, stablehlo::ReduceScatterOp,
+             stablehlo::CollectiveReduceOp>(collective)) {
+      return failure();
+    }
+    Type reducerType = getElementTypeOrSelf(
+        collective->getRegion(0).front().getArgument(0).getType());
+    if (!isPerTensorType(reducerType)) return failure();
+    bool changed = false;
+    for (unsigned i = 0; i < collective->getNumResults(); ++i) {
+      Value operand = collective->getOperand(i);
+      auto operandType = cast<RankedTensorType>(operand.getType());
+      if (!isPerTensorType(operandType) ||
+          operandType.getElementType() == reducerType) {
+        continue;
+      }
+      Value requantized = stablehlo::UniformQuantizeOp::create(
+          rewriter, collective->getLoc(), operandType.clone(reducerType),
+          operand);
+      rewriter.modifyOpInPlace(collective,
+                               [&] { collective->setOperand(i, requantized); });
+      changed = true;
+    }
+    return success(changed);
+  }
+};
+
 // TypeConverter for converting UQ type to int type.
 class UniformQuantizedToIntTypeConverter : public TypeConverter {
  public:
@@ -1712,28 +1746,11 @@ class StablehloLegalizeQuantToMathPass
   void runOnOperation() override {
     Operation* op = getOperation();
     MLIRContext* context = op->getContext();
-    // A reducing collective converts each operand to its computation's type.
-    op->walk([](Operation* collective) {
-      if (!isa<stablehlo::AllReduceOp, stablehlo::ReduceScatterOp,
-               stablehlo::CollectiveReduceOp>(collective)) {
-        return;
-      }
-      Type reducerType = getElementTypeOrSelf(
-          collective->getRegion(0).front().getArgument(0).getType());
-      if (!isPerTensorType(reducerType)) return;
-      OpBuilder builder(collective);
-      for (unsigned i = 0; i < collective->getNumResults(); ++i) {
-        Value operand = collective->getOperand(i);
-        auto operandType = cast<RankedTensorType>(operand.getType());
-        if (!isPerTensorType(operandType) ||
-            operandType.getElementType() == reducerType) {
-          continue;
-        }
-        collective->setOperand(i, stablehlo::UniformQuantizeOp::create(
-                                      builder, collective->getLoc(),
-                                      operandType.clone(reducerType), operand));
-      }
-    });
+    {
+      RewritePatternSet requantizePatterns(context);
+      requantizePatterns.add<RequantizeReducingCollectiveOperands>(context);
+      walkAndApplyPatterns(op, std::move(requantizePatterns));
+    }
     RewritePatternSet patterns(context);
 
     // Populate stablehlo quant ops conversion patterns.
