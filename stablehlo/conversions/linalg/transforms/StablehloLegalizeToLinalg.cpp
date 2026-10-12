@@ -141,6 +141,35 @@ Value extractClampedStartIndex(OpBuilder& builder, Location loc, Value tensor,
                                     index);
 }
 
+/// Clamps an extracted start index to [0, upperBound] and returns it as an
+/// index. A 64-bit index is clamped before the cast, which may narrow it.
+Value clampGatherStartIndex(OpBuilder& builder, Location loc, Value index,
+                            Value upperBound, ShapedType originalType) {
+  bool isUnsigned = originalType.getElementType().isUnsignedInteger();
+  if (index.getType().isIndex() ||
+      index.getType().getIntOrFloatBitWidth() < 64) {
+    if (!index.getType().isIndex()) {
+      index = isUnsigned ? builder.createOrFold<arith::IndexCastUIOp>(
+                               loc, builder.getIndexType(), index)
+                         : builder.createOrFold<arith::IndexCastOp>(
+                               loc, builder.getIndexType(), index);
+    }
+    return clampStartIndex(builder, loc, index, upperBound, originalType);
+  }
+  Type rawType = index.getType();
+  Value bound = arith::IndexCastOp::create(builder, loc, rawType, upperBound);
+  if (isUnsigned) {
+    index = arith::MinUIOp::create(builder, loc, index, bound);
+    return arith::IndexCastUIOp::create(builder, loc, builder.getIndexType(),
+                                        index);
+  }
+  Value zero = arith::ConstantIntOp::create(builder, loc, rawType, 0);
+  index = arith::MaxSIOp::create(builder, loc, index, zero);
+  index = arith::MinSIOp::create(builder, loc, index, bound);
+  return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                    index);
+}
+
 //===----------------------------------------------------------------------===//
 // stablehlo.Einsum conversion patterns.
 //===----------------------------------------------------------------------===//
@@ -1785,11 +1814,14 @@ struct MapOpToMapConverter final : OpConversionPattern<mlir::stablehlo::MapOp> {
 /// lowerings, special-cases of gather should be extracted in separate
 /// lowerings, and ideally encapsulated as separate ops or canonicalization
 /// patterns.
-struct GatherConversion final : OpConversionPattern<mlir::stablehlo::GatherOp> {
-  using OpConversionPattern::OpConversionPattern;
+/// Lowers gather and dynamic_gather; the offset extents come from the result.
+template <typename OpTy>
+struct GatherConversion final : OpConversionPattern<OpTy> {
+  using OpConversionPattern<OpTy>::OpConversionPattern;
+  using OpConversionPattern<OpTy>::getTypeConverter;
 
   LogicalResult matchAndRewrite(
-      mlir::stablehlo::GatherOp gatherOp, OpAdaptor adaptor,
+      OpTy gatherOp, typename OpTy::Adaptor adaptor,
       ConversionPatternRewriter& rewriter) const override {
     Location loc = gatherOp.getLoc();
 
@@ -1797,14 +1829,14 @@ struct GatherConversion final : OpConversionPattern<mlir::stablehlo::GatherOp> {
     Value operand = adaptor.getOperand();
 
     auto resultType =
-        getTypeConverter()->convertType<RankedTensorType>(gatherOp.getType());
+        getTypeConverter()->template convertType<RankedTensorType>(
+            gatherOp.getType());
     RankedTensorType startIndicesType =
         cast<RankedTensorType>(startIndices.getType());
 
     int64_t resultRank = resultType.getRank();
-    // slice_sizes has to have the same size as operand.rank, and doing it this
-    // way permits an unranked operand.
-    int64_t operandRank = gatherOp.getSliceSizes().size();
+    int64_t operandRank =
+        cast<ShapedType>(gatherOp.getOperand().getType()).getRank();
 
     int64_t indexVectorDim = gatherOp.getDimensionNumbers().getIndexVectorDim();
 
@@ -1892,9 +1924,8 @@ struct GatherConversion final : OpConversionPattern<mlir::stablehlo::GatherOp> {
         gCombine.insert(gCombine.begin() + indexVectorDim, constants[i]);
       }
 
-      indexFromStartIndices.push_back(extractIndexFromTensor(
-          rewriter, loc, startIndices, gatherOp.getStartIndices().getType(),
-          gCombine));
+      indexFromStartIndices.push_back(
+          tensor::ExtractOp::create(rewriter, loc, startIndices, gCombine));
     }
 
     // But then start indices are shuffled by the start index map. To make a
@@ -1910,7 +1941,7 @@ struct GatherConversion final : OpConversionPattern<mlir::stablehlo::GatherOp> {
     for (auto [operandDim, indicesDim] :
          llvm::zip_equal(operandBatchingDims, startIndicesBatchingDims)) {
       indexFromBatching[operandDim] =
-          gatherIndex[indicesDim + (indicesDim < indexVectorDim ? 0 : 1)];
+          gatherIndex[indicesDim - (indicesDim < indexVectorDim ? 0 : 1)];
     }
 
     auto isCollapsedOrBatching = [&](int64_t dim) {
@@ -1948,9 +1979,9 @@ struct GatherConversion final : OpConversionPattern<mlir::stablehlo::GatherOp> {
           loc, operandDimSize, outputDimSize);
 
       // Clamp indices to [0, i, operand_dim-output_dim].
-      remappedIndexFromIndices[i] = clampStartIndex(
+      remappedIndexFromIndices[i] = clampGatherStartIndex(
           rewriter, loc, remappedIndexFromIndices[i], largestValidIndex,
-          gatherOp.getStartIndices().getType());
+          cast<ShapedType>(gatherOp.getStartIndices().getType()));
     }
 
     // For the (remapped) offset dimensions, the index is the current index in
@@ -2695,7 +2726,8 @@ void populateStablehloToLinalgConversionPatterns(MLIRContext* context,
       BitcastConvertConverter,
       ConstConverterTensor,
       EinsumToLinalgConverter,
-      GatherConversion,
+      GatherConversion<mlir::stablehlo::GatherOp>,
+      GatherConversion<mlir::stablehlo::DynamicGatherOp>,
       RealDynamicSliceConverter,
       ReshapeOpConverter,
       ReverseConverter,
