@@ -365,3 +365,71 @@ func.func @gather_non_static(%operand : tensor<?x?xi32>, %start_indices : tensor
 // CHECK:             %[[Y:.+]] = tensor.extract %[[OPERAND]][%[[IN0]], %[[IDX1]]] : tensor<?x?xi32>
 // CHECK:             linalg.yield %[[Y]] : i32
 // CHECK:           return %[[RES]]
+
+// -----
+
+// A batching dim after index_vector_dim sits one place lower among the result
+// batch dims, which skip index_vector_dim.
+// CHECK-LABEL: func.func @gather_batching_dim_after_index_vector_dim(
+// CHECK-SAME:     %[[OPERAND:[a-zA-Z0-9_]+]]
+// CHECK-DAG:         %[[IDX1:.+]] = linalg.index 1
+// CHECK-DAG:         %[[IDX2:.+]] = linalg.index 2
+// CHECK:             tensor.extract %[[OPERAND]][%[[IDX1]], %{{.+}}, %[[IDX2]]] : tensor<5x4x8xi32>
+func.func @gather_batching_dim_after_index_vector_dim(%operand : tensor<5x4x8xi32>, %start_indices : tensor<1x6x5xi32>) -> tensor<6x5x8xi32> {
+  %res = "stablehlo.gather"(%operand, %start_indices) {
+    dimension_numbers = #stablehlo.gather<
+      collapsed_slice_dims = [1],
+      operand_batching_dims = [0],
+      start_indices_batching_dims = [2],
+      index_vector_dim = 0,
+      offset_dims = [2],
+      start_index_map = [1]
+    >,
+    indices_are_sorted = false,
+    slice_sizes = array<i64: 1, 1, 8>
+  } : (tensor<5x4x8xi32>, tensor<1x6x5xi32>) -> tensor<6x5x8xi32>
+  func.return %res : tensor<6x5x8xi32>
+}
+
+// -----
+
+// A 64-bit start index is clamped before the cast to index, which may be
+// narrower.
+// CHECK-LABEL: func.func @gather_i64_index(
+// CHECK:         %[[START:.+]] = tensor.extract %{{.+}} : tensor<2x1xi64>
+// CHECK:         %[[LOW:.+]] = arith.maxsi %[[START]], %{{.+}} : i64
+// CHECK:         %[[CLAMPED:.+]] = arith.minsi %[[LOW]], %{{.+}} : i64
+// CHECK:         arith.index_cast %[[CLAMPED]] : i64 to index
+func.func @gather_i64_index(%operand : tensor<3x4xi32>, %start_indices : tensor<2x1xi64>) -> tensor<2x4xi32> {
+  %res = "stablehlo.gather"(%operand, %start_indices) {
+    dimension_numbers = #stablehlo.gather<
+      collapsed_slice_dims = [0],
+      index_vector_dim = 1,
+      offset_dims = [1],
+      start_index_map = [0]
+    >,
+    indices_are_sorted = false,
+    slice_sizes = array<i64: 1, 4>
+  } : (tensor<3x4xi32>, tensor<2x1xi64>) -> tensor<2x4xi32>
+  func.return %res : tensor<2x4xi32>
+}
+
+// -----
+
+// dynamic_gather lowers like gather; its offset extents come from the result.
+// CHECK-LABEL: func.func @dynamic_gather(
+// CHECK-SAME:     %[[OPERAND:[a-zA-Z0-9_]+]]
+// CHECK:         linalg.generic
+// CHECK:           tensor.extract %[[OPERAND]]
+func.func @dynamic_gather(%operand : tensor<3x4x2xi32>, %start_indices : tensor<2x3x2xi64>, %slice_sizes : tensor<3xi64>) -> tensor<2x3x?x?xi32> {
+  %res = "stablehlo.dynamic_gather"(%operand, %start_indices, %slice_sizes) {
+    dimension_numbers = #stablehlo.gather<
+      collapsed_slice_dims = [0],
+      index_vector_dim = 2,
+      offset_dims = [2, 3],
+      start_index_map = [0, 1]
+    >,
+    indices_are_sorted = false
+  } : (tensor<3x4x2xi32>, tensor<2x3x2xi64>, tensor<3xi64>) -> tensor<2x3x?x?xi32>
+  func.return %res : tensor<2x3x?x?xi32>
+}
