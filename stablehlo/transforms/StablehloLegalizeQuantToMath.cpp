@@ -1561,14 +1561,38 @@ class ConvertQuantizedDataMovementOp : public OpConversionPattern<OpTy> {
   }
 };
 
+// Returns the process id the groups of `op` name, as i64: a global device id
+// is replica * partitions + partition. Returns null when the partition count
+// is unknown.
+Value buildReduceProcessId(OpBuilder& builder, Location loc,
+                           stablehlo::CollectiveReduceOp op) {
+  if (!op.getUseGlobalDeviceIds())
+    return buildProcessId(builder, loc, op.getChannelHandleAttr());
+  auto module = op->getParentOfType<ModuleOp>();
+  auto partitions =
+      module ? module->getAttrOfType<IntegerAttr>("mhlo.num_partitions")
+             : nullptr;
+  if (!partitions) return nullptr;
+  auto idType = RankedTensorType::get({}, builder.getI64Type());
+  Value replica = stablehlo::ConvertOp::create(
+      builder, loc, idType, stablehlo::ReplicaIdOp::create(builder, loc));
+  Value partition = stablehlo::ConvertOp::create(
+      builder, loc, idType, stablehlo::PartitionIdOp::create(builder, loc));
+  Value count = stablehlo::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(idType, partitions.getInt()));
+  Value base = stablehlo::MulOp::create(builder, loc, replica, count);
+  return stablehlo::AddOp::create(builder, loc, base, partition);
+}
+
 // Returns, per result, whether the process is its group's root.
 SmallVector<Value> buildIsRoot(OpBuilder& builder, Location loc,
                                stablehlo::CollectiveReduceOp op,
                                ValueRange operands) {
   int64_t numResults = op->getNumResults();
   auto groups = dyn_cast<DenseIntElementsAttr>(op.getReplicaGroups());
-  if (groups && !groups.empty() && !op.getUseGlobalDeviceIds()) {
-    Value id = buildProcessId(builder, loc, op.getChannelHandleAttr());
+  Value id;
+  if (groups && !groups.empty()) id = buildReduceProcessId(builder, loc, op);
+  if (id) {
     auto groupsType = cast<RankedTensorType>(groups.getType());
     int64_t numGroups = groupsType.getDimSize(0);
     int64_t groupSize = groupsType.getDimSize(1);
@@ -1619,8 +1643,8 @@ SmallVector<Value> buildIsRoot(OpBuilder& builder, Location loc,
     return isRoot;
   }
 
-  // Global device ids and mesh axes name no local process, so a reduction of
-  // ones tells the root apart.
+  // Mesh axes, and global device ids without a partition count, name no local
+  // process, so a reduction of ones tells the root apart.
   auto scalarType = RankedTensorType::get({}, builder.getI32Type());
   Value one = stablehlo::ConstantOp::create(
       builder, loc, DenseElementsAttr::get(scalarType, 1));
