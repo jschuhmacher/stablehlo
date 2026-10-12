@@ -1378,6 +1378,26 @@ class ConvertGenericOp : public ConversionPattern {
                     " with different quantization parameters for operands and"
                     " results is not supported.");
       }
+      // Signless storage compares as signed; unsigned storage must not.
+      if (!resultType.isSigned()) {
+        Location loc = op->getLoc();
+        auto storageType =
+            cast<ShapedType>(getQuantStorageType(op->getResultTypes()[0]));
+        auto unsignedType = storageType.clone(IntegerType::get(
+            op->getContext(), resultType.getStorageTypeIntegralWidth(),
+            IntegerType::Unsigned));
+        SmallVector<Value> unsignedOperands;
+        for (Value operand : operands) {
+          unsignedOperands.push_back(stablehlo::BitcastConvertOp::create(
+              rewriter, loc, unsignedType, operand));
+        }
+        OperationState state(loc, op->getName().getStringRef(),
+                             unsignedOperands, {unsignedType}, op->getAttrs());
+        Value result = rewriter.create(state)->getResult(0);
+        rewriter.replaceOpWithNewOp<stablehlo::BitcastConvertOp>(
+            op, storageType, result);
+        return success();
+      }
     }
 
     // Determine new result type: use storage type for uq types; use original
