@@ -1424,6 +1424,136 @@ class ConvertGenericOp : public ConversionPattern {
   }
 };
 
+// Returns the zero point of `quantType` as a scalar of its storage type.
+Value buildZeroPoint(OpBuilder& builder, Location loc,
+                     quant::UniformQuantizedType quantType) {
+  auto storageType = cast<IntegerType>(quantType.getStorageType());
+  return stablehlo::ConstantOp::create(
+      builder, loc,
+      DenseElementsAttr::get(
+          RankedTensorType::get({}, storageType),
+          APInt(storageType.getWidth(), quantType.getZeroPoint(),
+                quantType.isSigned())));
+}
+
+// Returns this process's id in the grid `channelHandle` selects, as i64.
+Value buildProcessId(OpBuilder& builder, Location loc,
+                     stablehlo::ChannelHandleAttr channelHandle) {
+  Value id = channelHandle && channelHandle.getHandle() > 0
+                 ? stablehlo::PartitionIdOp::create(builder, loc).getResult()
+                 : stablehlo::ReplicaIdOp::create(builder, loc).getResult();
+  return stablehlo::ConvertOp::create(
+      builder, loc, RankedTensorType::get({}, builder.getI64Type()), id);
+}
+
+// Returns whether `id` is one of `ids`, as a scalar i1.
+Value buildIsOneOf(OpBuilder& builder, Location loc, Value id,
+                   ArrayRef<int64_t> ids) {
+  auto idsType = RankedTensorType::get({static_cast<int64_t>(ids.size())},
+                                       builder.getI64Type());
+  Value candidates = stablehlo::ConstantOp::create(
+      builder, loc, DenseIntElementsAttr::get(idsType, ids));
+  Value broadcast = stablehlo::BroadcastInDimOp::create(
+      builder, loc, idsType, id, builder.getDenseI64ArrayAttr({}));
+  Value matches = stablehlo::CompareOp::create(
+      builder, loc, broadcast, candidates, stablehlo::ComparisonDirection::EQ);
+  auto flagType = RankedTensorType::get({}, builder.getI1Type());
+  Value none = stablehlo::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(flagType, false));
+  auto any = stablehlo::ReduceOp::create(builder, loc, flagType, matches, none,
+                                         SmallVector<int64_t>{0});
+  Block& block = any.getBody().emplaceBlock();
+  block.addArgument(flagType, loc);
+  block.addArgument(flagType, loc);
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(&block);
+  Value either = stablehlo::OrOp::create(builder, loc, block.getArgument(0),
+                                         block.getArgument(1));
+  stablehlo::ReturnOp::create(builder, loc, either);
+  return any.getResult(0);
+}
+
+// Returns, per result, whether the process receives data.
+SmallVector<Value> buildReceives(OpBuilder& builder, Location loc,
+                                 stablehlo::CollectivePermuteOp op,
+                                 ValueRange operands) {
+  SmallVector<int64_t> targets;
+  for (auto [index, id] :
+       llvm::enumerate(op.getSourceTargetPairs().getValues<int64_t>())) {
+    if (index % 2 == 1) targets.push_back(id);
+  }
+  Value id = buildProcessId(builder, loc, op.getChannelHandleAttr());
+  return {buildIsOneOf(builder, loc, id, targets)};
+}
+
+SmallVector<Value> buildReceives(OpBuilder& builder, Location loc,
+                                 stablehlo::CollectiveBroadcastOp op,
+                                 ValueRange operands) {
+  auto groups = dyn_cast<DenseIntElementsAttr>(op.getReplicaGroups());
+  if (groups && !groups.empty()) {
+    Value id = buildProcessId(builder, loc, op.getChannelHandleAttr());
+    Value member = buildIsOneOf(builder, loc, id,
+                                llvm::to_vector(groups.getValues<int64_t>()));
+    return SmallVector<Value>(op->getNumResults(), member);
+  }
+  // Without explicit ids, broadcasting ones marks the members.
+  auto scalarType = RankedTensorType::get({}, builder.getI32Type());
+  Value one = stablehlo::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(scalarType, 1));
+  SmallVector<Value> indicatorOperands(op->getNumResults(), one);
+  if (op.getHasDynamicRoot()) indicatorOperands.push_back(operands.back());
+  auto indicator = stablehlo::CollectiveBroadcastOp::create(
+      builder, loc, SmallVector<Type>(op->getNumResults(), scalarType),
+      indicatorOperands, op->getAttrs());
+  Value zero = stablehlo::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(scalarType, 0));
+  SmallVector<Value> receives;
+  for (Value marker : indicator->getResults()) {
+    receives.push_back(stablehlo::CompareOp::create(
+        builder, loc, marker, zero, stablehlo::ComparisonDirection::NE));
+  }
+  return receives;
+}
+
+// Moves storage values; a process that receives nothing holds the zero point.
+template <typename OpTy>
+class ConvertQuantizedDataMovementOp : public OpConversionPattern<OpTy> {
+ public:
+  using OpConversionPattern<OpTy>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      OpTy op, typename OpTy::Adaptor adaptor,
+      ConversionPatternRewriter& rewriter) const override {
+    if (llvm::none_of(op->getResultTypes(), isPerTensorType)) {
+      return rewriter.notifyMatchFailure(op, "no per-tensor quantized result");
+    }
+    Location loc = op.getLoc();
+    SmallVector<Type> storageTypes;
+    for (Type type : op->getResultTypes()) {
+      storageTypes.push_back(getQuantStorageType(type));
+    }
+    OperationState state(loc, op->getName(), adaptor.getOperands(),
+                         storageTypes, op->getAttrs());
+    Operation* moved = rewriter.create(state);
+    SmallVector<Value> receives =
+        buildReceives(rewriter, loc, op, adaptor.getOperands());
+
+    SmallVector<Value> results;
+    for (auto [index, type] : llvm::enumerate(op->getResultTypes())) {
+      if (!isPerTensorType(type)) {
+        results.push_back(moved->getResult(index));
+        continue;
+      }
+      results.push_back(chlo::BroadcastSelectOp::create(
+          rewriter, loc, storageTypes[index], receives[index],
+          moved->getResult(index),
+          buildZeroPoint(rewriter, loc, getPerTensorType(type))));
+    }
+    rewriter.replaceOp(op, results);
+    return success();
+  }
+};
+
 // Off the root the result is the zero point, found by a reduction of ones.
 class ConvertQuantizedCollectiveReduceOp
     : public OpConversionPattern<stablehlo::CollectiveReduceOp> {
@@ -1477,20 +1607,12 @@ class ConvertQuantizedCollectiveReduceOp
         results.push_back(reduce.getResult(index));
         continue;
       }
-      quant::UniformQuantizedType quantType = getPerTensorType(type);
       Value isRoot = stablehlo::CompareOp::create(
           rewriter, loc, indicator.getResult(index), zero,
           stablehlo::ComparisonDirection::NE);
-      auto storageType = cast<IntegerType>(quantType.getStorageType());
-      Value zeroPoint = stablehlo::ConstantOp::create(
-          rewriter, loc,
-          DenseElementsAttr::get(
-              RankedTensorType::get({}, storageType),
-              APInt(storageType.getWidth(), quantType.getZeroPoint(),
-                    quantType.isSigned())));
       results.push_back(chlo::BroadcastSelectOp::create(
           rewriter, loc, storageTypes[index], isRoot, reduce.getResult(index),
-          zeroPoint));
+          buildZeroPoint(rewriter, loc, getPerTensorType(type))));
     }
     rewriter.replaceOp(op, results);
     return success();
@@ -1555,8 +1677,11 @@ class StablehloLegalizeQuantToMathPass
     // uq->int convert patterns for func.func, func.return and generic ops.
     UniformQuantizedToIntTypeConverter converter;
     patterns.add<ConvertGenericOp>(context, converter, /*benefit=*/10);
-    patterns.add<ConvertQuantizedCollectiveReduceOp>(converter, context,
-                                                     /*benefit=*/10);
+    patterns
+        .add<ConvertQuantizedCollectiveReduceOp,
+             ConvertQuantizedDataMovementOp<stablehlo::CollectiveBroadcastOp>,
+             ConvertQuantizedDataMovementOp<stablehlo::CollectivePermuteOp>>(
+            converter, context, /*benefit=*/10);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    converter);
     populateReturnOpTypeConversionPattern(patterns, converter);
