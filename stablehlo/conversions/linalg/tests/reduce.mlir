@@ -551,12 +551,16 @@ func.func @dynamic_reduce_window_sum_nhwc(%arg0: tensor<?x?x?x?xf32>,
 // CHECK:         %[[D0:.+]] = tensor.dim %[[ARG0]], %[[C0]] : tensor<?x?x?x?xf32>
 // CHECK:         %[[T1:.+]] = tensor.dim %[[ARG0]], %[[C1]] : tensor<?x?x?x?xf32>
 // CHECK:         %[[T2:.+]] = arith.subi %[[T1]], %[[C3]]
-// CHECK:         %[[T3:.+]] = arith.divui %[[T2]], %[[C2]]
-// CHECK:         %[[D1:.+]] = arith.addi %[[T3]], %[[C1]]
+// CHECK:         %[[FITS1:.+]] = arith.cmpi sge, %[[T2]], %[[C0]]
+// CHECK:         %[[T3:.+]] = arith.divsi %[[T2]], %[[C2]]
+// CHECK:         %[[T4:.+]] = arith.addi %[[T3]], %[[C1]]
+// CHECK:         %[[D1:.+]] = arith.select %[[FITS1]], %[[T4]], %[[C0]]
 // CHECK:         %[[T1:.+]] = tensor.dim %[[ARG0]], %[[C2]] : tensor<?x?x?x?xf32>
 // CHECK:         %[[T2:.+]] = arith.subi %[[T1]], %[[C3]]
-// CHECK:         %[[T3:.+]] = arith.divui %[[T2]], %[[C2]]
-// CHECK:         %[[D2:.+]] = arith.addi %[[T3]], %[[C1]]
+// CHECK:         %[[FITS2:.+]] = arith.cmpi sge, %[[T2]], %[[C0]]
+// CHECK:         %[[T3:.+]] = arith.divsi %[[T2]], %[[C2]]
+// CHECK:         %[[T4:.+]] = arith.addi %[[T3]], %[[C1]]
+// CHECK:         %[[D2:.+]] = arith.select %[[FITS2]], %[[T4]], %[[C0]]
 // CHECK:         %[[D3:.+]] = tensor.dim %[[ARG0]], %[[C3]] : tensor<?x?x?x?xf32>
 // CHECK:         %[[INIT:.+]] = tensor.empty(%[[D0]], %[[D1]], %[[D2]], %[[D3]]) : tensor<?x?x?x?xf32>
 // CHECK:         %[[INIT_VAL:.+]] = tensor.extract %[[ARG1]][] : tensor<f32>
@@ -810,3 +814,57 @@ func.func @reduce_window_generic_scalar(%arg0: tensor<f32>, %arg1: tensor<f32>) 
   func.return %0 : tensor<f32>
 }
 // CHECK: linalg.generic {indexing_maps = [#[[MAP]], #[[MAP]], #[[MAP]]]
+
+// -----
+
+// A dynamic integer reduce_window fills a dynamically sized init; the window
+// tensor takes the input element type. The dynamic extent is
+// (padded - dilated window) / stride + 1, or 0 when the window does not fit.
+// CHECK-LABEL: func @reduce_window_generic_dynamic_i32
+// CHECK-SAME:    %[[ARG0:[a-zA-Z0-9_]*]]
+// CHECK-DAG:     %[[DILATED:.+]] = arith.constant 3 : index
+// CHECK-DAG:     %[[STRIDE:.+]] = arith.constant 4 : index
+// CHECK:         %[[ROWS:.+]] = tensor.dim
+// CHECK:         %[[SPAN:.+]] = arith.subi %[[ROWS]], %[[DILATED]] : index
+// CHECK:         arith.divsi %[[SPAN]], %[[STRIDE]] : index
+// CHECK:         %[[EXTENT:.+]] = arith.select
+// CHECK:         %[[INIT:.+]] = tensor.empty(%[[EXTENT]]) : tensor<?x9xi32>
+// CHECK:         %[[FILL:.+]] = linalg.fill ins(%{{.+}} : i32) outs(%[[INIT]] : tensor<?x9xi32>)
+// CHECK:         %[[WINDOW:.+]] = tensor.empty() : tensor<2x3xi32>
+// CHECK:         linalg.generic
+// CHECK-SAME:      ins(%{{.+}}, %[[WINDOW]] : tensor<?x11xi32>, tensor<2x3xi32>) outs(%[[FILL]] : tensor<?x9xi32>)
+// CHECK:           arith.addi
+func.func @reduce_window_generic_dynamic_i32(%arg0: tensor<?x7xi32>, %arg1: tensor<i32>) -> tensor<?x9xi32> {
+  %0 = "stablehlo.reduce_window"(%arg0, %arg1) ({
+  ^bb0(%arg2: tensor<i32>, %arg3: tensor<i32>):
+    %1 = stablehlo.add %arg2, %arg3 : tensor<i32>
+    "stablehlo.return"(%1) : (tensor<i32>) -> ()
+  }) {padding = dense<[[0, 0], [2, 2]]> : tensor<2x2xi64>,
+      window_dilations = array<i64: 2, 1>,
+      window_dimensions = array<i64: 2, 3>,
+      window_strides = array<i64: 4, 1>} : (tensor<?x7xi32>, tensor<i32>) -> tensor<?x9xi32>
+  func.return %0 : tensor<?x9xi32>
+}
+
+// -----
+
+// Pooling with a dynamic spatial extent uses the dilated window, (3 - 1) * 2 +
+// 1 = 5, and clamps a window that does not fit to 0.
+// CHECK-LABEL: func @dynamic_reduce_window_max_nhwc_dilated
+// CHECK-DAG:     %[[DILATED:.+]] = arith.constant 5 : index
+// CHECK:         %[[ROWS:.+]] = tensor.dim
+// CHECK:         %[[SPAN:.+]] = arith.subi %[[ROWS]], %[[DILATED]] : index
+// CHECK:         arith.divsi %[[SPAN]]
+// CHECK:         arith.select
+// CHECK:         linalg.pooling_nhwc_max
+// CHECK-SAME:      dilations = dense<2> : vector<2xi64>
+func.func @dynamic_reduce_window_max_nhwc_dilated(%arg0: tensor<1x?x11x5xf32>, %arg1: tensor<f32>) -> tensor<1x?x4x5xf32> {
+  %0 = "stablehlo.reduce_window"(%arg0, %arg1) ({
+  ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
+    %1 = stablehlo.maximum %arg2, %arg3 : tensor<f32>
+    "stablehlo.return"(%1) : (tensor<f32>) -> ()
+  }) {window_dimensions = array<i64: 1, 3, 3, 1>,
+      window_dilations = array<i64: 1, 2, 2, 1>,
+      window_strides = array<i64: 1, 2, 2, 1>} : (tensor<1x?x11x5xf32>, tensor<f32>) -> tensor<1x?x4x5xf32>
+  func.return %0 : tensor<1x?x4x5xf32>
+}
