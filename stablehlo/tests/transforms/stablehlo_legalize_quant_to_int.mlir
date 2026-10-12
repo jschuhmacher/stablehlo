@@ -2580,8 +2580,8 @@ func.func @collective_reduce_maximum(%arg0: tensor<2x3x!quant.uniform<i8:f32, 0.
 
 // -----
 
-// Global device ids flatten replicas and partitions, which this process cannot
-// name locally, so a reduction of ones tells the root apart.
+// Global device ids flatten replicas and partitions; without mhlo.num_partitions
+// this process cannot name itself, so a reduction of ones tells the root apart.
 // CHECK-LABEL: func @collective_reduce_global_device_ids
 // CHECK: %[[REDUCED:.+]] = "stablehlo.collective_reduce"(%{{.+}})
 // CHECK: %[[ONE:.+]] = stablehlo.constant dense<1> : tensor<i32>
@@ -3066,4 +3066,27 @@ func.func @collective_broadcast_mesh_axes(%arg0: tensor<2x3x!quant.uniform<i8:f3
     channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>
   } : (tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
   func.return %0 : tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
+}
+
+// -----
+
+// Global device ids are flattened ranks, replica * partitions + partition, so
+// the roots of [[0, 3], [1, 2]] are ranks 0 and 1.
+// CHECK-LABEL: func @collective_reduce_flattened_ids
+// CHECK: %[[REDUCED:.+]] = "stablehlo.collective_reduce"(%{{.+}})
+// CHECK-DAG: %[[REPLICA:.+]] = stablehlo.replica_id
+// CHECK-DAG: %[[PARTITION:.+]] = stablehlo.partition_id
+// CHECK: %[[ROOTS:.+]] = stablehlo.constant dense<[0, 1]> : tensor<2xi64>
+// CHECK: %[[IS_ROOT:.+]] = stablehlo.reduce
+// CHECK: chlo.broadcast_select %[[IS_ROOT]], %[[REDUCED]], %{{.+}} : (tensor<i1>, tensor<3x2xi8>, tensor<i8>) -> tensor<3x2xi8>
+// CHECK-NOT: "stablehlo.collective_reduce"
+module attributes {mhlo.num_partitions = 2 : i32, mhlo.num_replicas = 2 : i32} {
+func.func @collective_reduce_flattened_ids(%arg0: tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>) -> tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>> {
+  %0 = "stablehlo.collective_reduce"(%arg0) ({
+  ^bb0(%x: tensor<!quant.uniform<i8:f32, 0.5:-3>>, %y: tensor<!quant.uniform<i8:f32, 0.5:-3>>):
+    %1 = stablehlo.maximum %x, %y : tensor<!quant.uniform<i8:f32, 0.5:-3>>
+    stablehlo.return %1 : tensor<!quant.uniform<i8:f32, 0.5:-3>>
+  }) {replica_groups = dense<[[0, 3], [1, 2]]> : tensor<2x2xi64>, channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>, use_global_device_ids} : (tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>) -> tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>
+  func.return %0 : tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>
+}
 }
