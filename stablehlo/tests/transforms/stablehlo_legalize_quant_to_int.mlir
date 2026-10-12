@@ -2556,42 +2556,67 @@ func.func @reduce_scatter_per_tensor_quantization(%data: tensor<4x16x!quant.unif
 // -----
 
 // A same-scale maximum stays one integer maximum on the storage values. Off the
-// root the result is the zero point: a reduction of ones tells the root apart.
+// root the result is the zero point; the roots are the first id of each group.
 // CHECK-LABEL: func @collective_reduce_maximum
 // CHECK: %[[REDUCED:.+]] = "stablehlo.collective_reduce"(%{{.+}})
 // CHECK-NEXT: ^bb0(%[[X:.+]]: tensor<i8>, %[[Y:.+]]: tensor<i8>):
 // CHECK-NEXT: %[[MAX:.+]] = stablehlo.maximum %[[X]], %[[Y]] : tensor<i8>
 // CHECK-NEXT: stablehlo.return %[[MAX]] : tensor<i8>
-// CHECK: %[[ONE:.+]] = stablehlo.constant dense<1> : tensor<i32>
-// CHECK: %[[COUNT:.+]] = "stablehlo.collective_reduce"(%[[ONE]])
-// CHECK: stablehlo.add
-// CHECK: %[[IS_ROOT:.+]] = stablehlo.compare NE, %[[COUNT]]
+// CHECK: stablehlo.replica_id
+// CHECK: %[[ROOTS:.+]] = stablehlo.constant dense<[1, 3]> : tensor<2xi64>
+// CHECK: stablehlo.compare EQ, %{{.+}}, %[[ROOTS]]
+// CHECK: %[[IS_ROOT:.+]] = stablehlo.reduce
 // CHECK: %[[ZERO_POINT:.+]] = stablehlo.constant dense<-3> : tensor<i8>
 // CHECK: chlo.broadcast_select %[[IS_ROOT]], %[[REDUCED]], %[[ZERO_POINT]] : (tensor<i1>, tensor<2x3xi8>, tensor<i8>) -> tensor<2x3xi8>
+// CHECK-NOT: "stablehlo.collective_reduce"
 func.func @collective_reduce_maximum(%arg0: tensor<2x3x!quant.uniform<i8:f32, 0.5:-3>>) -> tensor<2x3x!quant.uniform<i8:f32, 0.5:-3>> {
   %0 = "stablehlo.collective_reduce"(%arg0) ({
   ^bb0(%x: tensor<!quant.uniform<i8:f32, 0.5:-3>>, %y: tensor<!quant.uniform<i8:f32, 0.5:-3>>):
     %1 = stablehlo.maximum %x, %y : tensor<!quant.uniform<i8:f32, 0.5:-3>>
     stablehlo.return %1 : tensor<!quant.uniform<i8:f32, 0.5:-3>>
-  }) {replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>} : (tensor<2x3x!quant.uniform<i8:f32, 0.5:-3>>) -> tensor<2x3x!quant.uniform<i8:f32, 0.5:-3>>
+  }) {replica_groups = dense<[[1, 0], [3, 2]]> : tensor<2x2xi64>} : (tensor<2x3x!quant.uniform<i8:f32, 0.5:-3>>) -> tensor<2x3x!quant.uniform<i8:f32, 0.5:-3>>
   func.return %0 : tensor<2x3x!quant.uniform<i8:f32, 0.5:-3>>
+}
+
+// -----
+
+// Global device ids flatten replicas and partitions, which this process cannot
+// name locally, so a reduction of ones tells the root apart.
+// CHECK-LABEL: func @collective_reduce_global_device_ids
+// CHECK: %[[REDUCED:.+]] = "stablehlo.collective_reduce"(%{{.+}})
+// CHECK: %[[ONE:.+]] = stablehlo.constant dense<1> : tensor<i32>
+// CHECK: %[[COUNT:.+]] = "stablehlo.collective_reduce"(%[[ONE]])
+// CHECK: %[[IS_ROOT:.+]] = stablehlo.compare NE, %[[COUNT]]
+// CHECK: chlo.broadcast_select %[[IS_ROOT]], %[[REDUCED]], %{{.+}} : (tensor<i1>, tensor<3x2xi8>, tensor<i8>) -> tensor<3x2xi8>
+func.func @collective_reduce_global_device_ids(%arg0: tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>) -> tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>> {
+  %0 = "stablehlo.collective_reduce"(%arg0) ({
+  ^bb0(%x: tensor<!quant.uniform<i8:f32, 0.5:-3>>, %y: tensor<!quant.uniform<i8:f32, 0.5:-3>>):
+    %1 = stablehlo.maximum %x, %y : tensor<!quant.uniform<i8:f32, 0.5:-3>>
+    stablehlo.return %1 : tensor<!quant.uniform<i8:f32, 0.5:-3>>
+  }) {replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>, channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>, use_global_device_ids} : (tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>) -> tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>
+  func.return %0 : tensor<3x2x!quant.uniform<i8:f32, 0.5:-3>>
 }
 // -----
 
-// The second operand is requantized to the reducer type, the dynamic roots feed
-// the indicator, and a u8 zero point above 127 stays unsigned.
+// The second operand is requantized to the reducer type, each dynamic root picks
+// a column of the groups, and a u8 zero point above 127 stays unsigned.
 // CHECK-LABEL: func @collective_reduce_dynamic_root_requantize
 // CHECK-SAME: %[[ARG0:[^:]+]]: tensor<2x3xi8>, %[[ARG1:[^:]+]]: tensor<3x5xi8>, %[[ROOT:[^:]+]]: tensor<2xi32>
 // CHECK-NOT: "stablehlo.collective_reduce"
 // CHECK: %[[REQUANT:.+]] = stablehlo.convert %{{.+}} : (tensor<3x5xf32>) -> tensor<3x5xi8>
 // CHECK: %[[REDUCED:.+]]:2 = "stablehlo.collective_reduce"(%[[ARG0]], %[[REQUANT]], %[[ROOT]])
-// CHECK: %[[COUNT:.+]]:2 = "stablehlo.collective_reduce"(%{{.+}}, %{{.+}}, %[[ROOT]])
-// CHECK: %[[IS_ROOT0:.+]] = stablehlo.compare NE, %[[COUNT]]#0
+// CHECK: %[[GROUPS:.+]] = stablehlo.constant dense<{{\[\[}}0, 1], [2, 3]]> : tensor<2x2xi64>
+// CHECK: stablehlo.slice %[[ROOT]] [0:1]
+// CHECK: %[[COLUMN0:.+]] = stablehlo.dynamic_slice %[[GROUPS]]
+// CHECK: stablehlo.compare EQ, %{{.+}}, %{{.+}}
+// CHECK: %[[IS_ROOT0:.+]] = stablehlo.reduce
+// CHECK: stablehlo.slice %[[ROOT]] [1:2]
+// CHECK: %[[IS_ROOT1:.+]] = stablehlo.reduce
 // CHECK: %[[ZP0:.+]] = stablehlo.constant dense<-56> : tensor<i8>
 // CHECK: chlo.broadcast_select %[[IS_ROOT0]], %[[REDUCED]]#0, %[[ZP0]] : (tensor<i1>, tensor<2x3xi8>, tensor<i8>) -> tensor<2x3xi8>
-// CHECK: %[[IS_ROOT1:.+]] = stablehlo.compare NE, %[[COUNT]]#1
 // CHECK: %[[ZP1:.+]] = stablehlo.constant dense<-56> : tensor<i8>
 // CHECK: chlo.broadcast_select %[[IS_ROOT1]], %[[REDUCED]]#1, %[[ZP1]] : (tensor<i1>, tensor<3x5xi8>, tensor<i8>) -> tensor<3x5xi8>
+// CHECK-NOT: "stablehlo.collective_reduce"
 func.func @collective_reduce_dynamic_root_requantize(
     %arg0: tensor<2x3x!quant.uniform<u8:f32, 0.5:200>>,
     %arg1: tensor<3x5x!quant.uniform<u8:f32, 0.25:150>>,
@@ -2603,7 +2628,7 @@ func.func @collective_reduce_dynamic_root_requantize(
        %y: tensor<!quant.uniform<u8:f32, 0.5:200>>):
     %1 = stablehlo.maximum %x, %y : tensor<!quant.uniform<u8:f32, 0.5:200>>
     stablehlo.return %1 : tensor<!quant.uniform<u8:f32, 0.5:200>>
-  }) {replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>, has_dynamic_root}
+  }) {replica_groups = dense<[[0, 1], [2, 3]]> : tensor<2x2xi64>, has_dynamic_root}
     : (tensor<2x3x!quant.uniform<u8:f32, 0.5:200>>,
        tensor<3x5x!quant.uniform<u8:f32, 0.25:150>>, tensor<2xi32>)
     -> (tensor<2x3x!quant.uniform<u8:f32, 0.5:200>>,
