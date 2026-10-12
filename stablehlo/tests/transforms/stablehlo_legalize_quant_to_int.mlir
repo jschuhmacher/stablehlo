@@ -2911,3 +2911,37 @@ func.func private @stablehlo.uniform_dequantize.impl(%arg0 : tensor<2x!quant.uni
   %0 = stablehlo.uniform_dequantize %arg0 : (tensor<2x!quant.uniform<i8:f32, 1.000000e-01>>) -> tensor<2xf32>
   return %0: tensor<2xf32>
 }
+
+// -----
+
+// Unsigned storage compares as unsigned: 200 must beat 100 in u8.
+// CHECK-LABEL: func @all_reduce_max_unsigned
+// CHECK: stablehlo.all_reduce
+// CHECK-NEXT: ^bb0(%[[X:.+]]: tensor<i8>, %[[Y:.+]]: tensor<i8>):
+// CHECK-DAG: %[[UX:.+]] = stablehlo.bitcast_convert %[[X]] : (tensor<i8>) -> tensor<ui8>
+// CHECK-DAG: %[[UY:.+]] = stablehlo.bitcast_convert %[[Y]] : (tensor<i8>) -> tensor<ui8>
+// CHECK: %[[MAX:.+]] = stablehlo.maximum %[[UX]], %[[UY]] : tensor<ui8>
+// CHECK: %[[RESULT:.+]] = stablehlo.bitcast_convert %[[MAX]] : (tensor<ui8>) -> tensor<i8>
+// CHECK: stablehlo.return %[[RESULT]] : tensor<i8>
+// CHECK: }) : (tensor<2x3xi8>) -> tensor<2x3xi8>
+func.func @all_reduce_max_unsigned(%arg0: tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>) -> tensor<2x3x!quant.uniform<u8:f32, 0.5:3>> {
+  %0 = "stablehlo.all_reduce"(%arg0) ({
+  ^bb0(%x: tensor<!quant.uniform<u8:f32, 0.5:3>>, %y: tensor<!quant.uniform<u8:f32, 0.5:3>>):
+    %1 = stablehlo.maximum %x, %y : tensor<!quant.uniform<u8:f32, 0.5:3>>
+    stablehlo.return %1 : tensor<!quant.uniform<u8:f32, 0.5:3>>
+  }) { replica_groups = dense<[[0, 1]]> : tensor<1x2xi64> } : (tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>) -> tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
+  func.return %0 : tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
+}
+
+// -----
+
+// CHECK-LABEL: func @minimum_unsigned
+// CHECK-SAME: %[[ARG0:.+]]: tensor<2x3xi8>, %[[ARG1:.+]]: tensor<2x3xi8>
+// CHECK-DAG: %[[U0:.+]] = stablehlo.bitcast_convert %[[ARG0]] : (tensor<2x3xi8>) -> tensor<2x3xui8>
+// CHECK-DAG: %[[U1:.+]] = stablehlo.bitcast_convert %[[ARG1]] : (tensor<2x3xi8>) -> tensor<2x3xui8>
+// CHECK: %[[MIN:.+]] = stablehlo.minimum %[[U0]], %[[U1]] : tensor<2x3xui8>
+// CHECK: stablehlo.bitcast_convert %[[MIN]] : (tensor<2x3xui8>) -> tensor<2x3xi8>
+func.func @minimum_unsigned(%arg0: tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>, %arg1: tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>) -> tensor<2x3x!quant.uniform<u8:f32, 0.5:3>> {
+  %0 = stablehlo.minimum %arg0, %arg1 : tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
+  func.return %0 : tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
+}
