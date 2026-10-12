@@ -1446,15 +1446,12 @@ Value buildProcessId(OpBuilder& builder, Location loc,
       builder, loc, RankedTensorType::get({}, builder.getI64Type()), id);
 }
 
-// Returns whether `id` is one of `ids`, as a scalar i1.
+// Returns whether `id` is one of the rank-1 `candidates`, as a scalar i1.
 Value buildIsOneOf(OpBuilder& builder, Location loc, Value id,
-                   ArrayRef<int64_t> ids) {
-  auto idsType = RankedTensorType::get({static_cast<int64_t>(ids.size())},
-                                       builder.getI64Type());
-  Value candidates = stablehlo::ConstantOp::create(
-      builder, loc, DenseIntElementsAttr::get(idsType, ids));
+                   Value candidates) {
+  auto candidatesType = cast<RankedTensorType>(candidates.getType());
   Value broadcast = stablehlo::BroadcastInDimOp::create(
-      builder, loc, idsType, id, builder.getDenseI64ArrayAttr({}));
+      builder, loc, candidatesType, id, builder.getDenseI64ArrayAttr({}));
   Value matches = stablehlo::CompareOp::create(
       builder, loc, broadcast, candidates, stablehlo::ComparisonDirection::EQ);
   auto flagType = RankedTensorType::get({}, builder.getI1Type());
@@ -1471,6 +1468,15 @@ Value buildIsOneOf(OpBuilder& builder, Location loc, Value id,
                                          block.getArgument(1));
   stablehlo::ReturnOp::create(builder, loc, either);
   return any.getResult(0);
+}
+
+Value buildIsOneOf(OpBuilder& builder, Location loc, Value id,
+                   ArrayRef<int64_t> ids) {
+  auto idsType = RankedTensorType::get({static_cast<int64_t>(ids.size())},
+                                       builder.getI64Type());
+  Value candidates = stablehlo::ConstantOp::create(
+      builder, loc, DenseIntElementsAttr::get(idsType, ids));
+  return buildIsOneOf(builder, loc, id, candidates);
 }
 
 // Returns, per result, whether the process receives data.
@@ -1554,7 +1560,80 @@ class ConvertQuantizedDataMovementOp : public OpConversionPattern<OpTy> {
   }
 };
 
-// Off the root the result is the zero point, found by a reduction of ones.
+// Returns, per result, whether the process is its group's root.
+SmallVector<Value> buildIsRoot(OpBuilder& builder, Location loc,
+                               stablehlo::CollectiveReduceOp op,
+                               ValueRange operands) {
+  int64_t numResults = op->getNumResults();
+  auto groups = dyn_cast<DenseIntElementsAttr>(op.getReplicaGroups());
+  if (groups && !groups.empty() && !op.getUseGlobalDeviceIds()) {
+    Value id = buildProcessId(builder, loc, op.getChannelHandleAttr());
+    auto groupsType = cast<RankedTensorType>(groups.getType());
+    int64_t numGroups = groupsType.getDimSize(0);
+    int64_t groupSize = groupsType.getDimSize(1);
+    SmallVector<int64_t> ids = llvm::to_vector(groups.getValues<int64_t>());
+    if (!op.getHasDynamicRoot()) {
+      SmallVector<int64_t> roots;
+      for (int64_t group = 0; group < numGroups; ++group) {
+        roots.push_back(ids[group * groupSize]);
+      }
+      return SmallVector<Value>(numResults,
+                                buildIsOneOf(builder, loc, id, roots));
+    }
+    // Root `j` is column `rootOperand[j]` of the groups.
+    Value table = stablehlo::ConstantOp::create(builder, loc, groups);
+    auto indexType =
+        RankedTensorType::get({}, getElementTypeOrSelf(operands.back()));
+    Value zero = stablehlo::ConstantOp::create(
+        builder, loc, cast<ElementsAttr>(builder.getZeroAttr(indexType)));
+    auto columnType =
+        RankedTensorType::get({numGroups, 1}, builder.getI64Type());
+    auto rootsType = RankedTensorType::get({numGroups}, builder.getI64Type());
+    SmallVector<Value> isRoot;
+    for (int64_t result = 0; result < numResults; ++result) {
+      Value root = stablehlo::SliceOp::create(
+          builder, loc, operands.back(), ArrayRef<int64_t>{result},
+          ArrayRef<int64_t>{result + 1}, ArrayRef<int64_t>{1});
+      root = stablehlo::ReshapeOp::create(builder, loc, indexType, root);
+      Value column = stablehlo::DynamicSliceOp::create(
+          builder, loc, columnType, table, ValueRange{zero, root},
+          builder.getDenseI64ArrayAttr({numGroups, 1}));
+      Value roots =
+          stablehlo::ReshapeOp::create(builder, loc, rootsType, column);
+      isRoot.push_back(buildIsOneOf(builder, loc, id, roots));
+    }
+    return isRoot;
+  }
+
+  // Global device ids and mesh axes name no local process, so a reduction of
+  // ones tells the root apart.
+  auto scalarType = RankedTensorType::get({}, builder.getI32Type());
+  Value one = stablehlo::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(scalarType, 1));
+  SmallVector<Value> indicatorOperands(numResults, one);
+  if (op.getHasDynamicRoot()) indicatorOperands.push_back(operands.back());
+  auto indicator = stablehlo::CollectiveReduceOp::create(
+      builder, loc, SmallVector<Type>(numResults, scalarType),
+      indicatorOperands, op->getAttrs());
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    Block* body = builder.createBlock(&indicator.getComputation(), {},
+                                      {scalarType, scalarType}, {loc, loc});
+    Value sum = stablehlo::AddOp::create(builder, loc, body->getArgument(0),
+                                         body->getArgument(1));
+    stablehlo::ReturnOp::create(builder, loc, sum);
+  }
+  Value zero = stablehlo::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(scalarType, 0));
+  SmallVector<Value> isRoot;
+  for (Value count : indicator->getResults()) {
+    isRoot.push_back(stablehlo::CompareOp::create(
+        builder, loc, count, zero, stablehlo::ComparisonDirection::NE));
+  }
+  return isRoot;
+}
+
+// Off the root the result is the zero point.
 class ConvertQuantizedCollectiveReduceOp
     : public OpConversionPattern<stablehlo::CollectiveReduceOp> {
  public:
@@ -1580,26 +1659,8 @@ class ConvertQuantizedCollectiveReduceOp
       return failure();
     }
 
-    auto scalarType = RankedTensorType::get({}, rewriter.getI32Type());
-    Value one = stablehlo::ConstantOp::create(
-        rewriter, loc, DenseElementsAttr::get(scalarType, 1));
-    SmallVector<Value> indicatorOperands(op->getNumResults(), one);
-    if (op.getHasDynamicRoot()) {
-      indicatorOperands.push_back(adaptor.getOperands().back());
-    }
-    auto indicator = stablehlo::CollectiveReduceOp::create(
-        rewriter, loc, SmallVector<Type>(op->getNumResults(), scalarType),
-        indicatorOperands, op->getAttrs());
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      Block* body = rewriter.createBlock(&indicator.getComputation(), {},
-                                         {scalarType, scalarType}, {loc, loc});
-      Value sum = stablehlo::AddOp::create(rewriter, loc, body->getArgument(0),
-                                           body->getArgument(1));
-      stablehlo::ReturnOp::create(rewriter, loc, sum);
-    }
-    Value zero = stablehlo::ConstantOp::create(
-        rewriter, loc, DenseElementsAttr::get(scalarType, 0));
+    SmallVector<Value> isRoot =
+        buildIsRoot(rewriter, loc, op, adaptor.getOperands());
 
     SmallVector<Value> results;
     for (auto [index, type] : llvm::enumerate(op->getResultTypes())) {
@@ -1607,11 +1668,9 @@ class ConvertQuantizedCollectiveReduceOp
         results.push_back(reduce.getResult(index));
         continue;
       }
-      Value isRoot = stablehlo::CompareOp::create(
-          rewriter, loc, indicator.getResult(index), zero,
-          stablehlo::ComparisonDirection::NE);
       results.push_back(chlo::BroadcastSelectOp::create(
-          rewriter, loc, storageTypes[index], isRoot, reduce.getResult(index),
+          rewriter, loc, storageTypes[index], isRoot[index],
+          reduce.getResult(index),
           buildZeroPoint(rewriter, loc, getPerTensorType(type))));
     }
     rewriter.replaceOp(op, results);
