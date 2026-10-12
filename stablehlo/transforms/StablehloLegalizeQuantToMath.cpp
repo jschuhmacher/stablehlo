@@ -1353,16 +1353,16 @@ class ConvertGenericOp : public ConversionPattern {
     // This pattern only handle selected ops.
     if (!isa<stablehlo::AllGatherOp, stablehlo::AllReduceOp,
              stablehlo::AllToAllOp, stablehlo::AsyncDoneOp,
-             stablehlo::AsyncStartOp, stablehlo::ReduceScatterOp,
-             stablehlo::BitcastConvertOp, stablehlo::BroadcastInDimOp,
-             stablehlo::CompositeOp, stablehlo::ConcatenateOp,
-             stablehlo::ConstantOp, stablehlo::DynamicReshapeOp,
-             stablehlo::DynamicSliceOp, stablehlo::GatherOp, stablehlo::MaxOp,
-             stablehlo::MinOp, stablehlo::PadOp, stablehlo::ReduceWindowOp,
-             stablehlo::ReshapeOp, stablehlo::ReturnOp, stablehlo::SelectOp,
-             stablehlo::SliceOp, stablehlo::TransposeOp,
-             stablehlo::GetDimensionSizeOp, stablehlo::DynamicBroadcastInDimOp>(
-            op)) {
+             stablehlo::AsyncStartOp, stablehlo::BitcastConvertOp,
+             stablehlo::BroadcastInDimOp, stablehlo::CompositeOp,
+             stablehlo::ConcatenateOp, stablehlo::ConstantOp,
+             stablehlo::DynamicReshapeOp, stablehlo::DynamicSliceOp,
+             stablehlo::GatherOp, stablehlo::MaxOp, stablehlo::MinOp,
+             stablehlo::PadOp, stablehlo::ReduceScatterOp,
+             stablehlo::ReduceWindowOp, stablehlo::ReshapeOp,
+             stablehlo::ReturnOp, stablehlo::SelectOp, stablehlo::SliceOp,
+             stablehlo::TransposeOp, stablehlo::GetDimensionSizeOp,
+             stablehlo::DynamicBroadcastInDimOp>(op)) {
       return rewriter.notifyMatchFailure(
           op, "Unsupported op for performing type change");
     }
