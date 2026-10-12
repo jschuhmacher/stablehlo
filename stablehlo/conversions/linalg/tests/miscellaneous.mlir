@@ -1578,6 +1578,32 @@ func.func @dynamic_update_slice_dynamic(
 
 // -----
 
+// A result type more static than the operand gets a cast; each start index is
+// clamped to the operand extent minus the update extent.
+// CHECK-LABEL: func @dynamic_update_slice_refined_result(
+// CHECK-SAME:    %[[TARGET:[a-zA-Z0-9_]*]]
+// CHECK-SAME:    %[[UPDATE:[a-zA-Z0-9_]*]]
+func.func @dynamic_update_slice_refined_result(
+    %target: tensor<?x5xf32>, %update: tensor<2x3xf32>, %start1: tensor<i64>,
+    %start2: tensor<i64>) -> tensor<4x5xf32> {
+  %0 = "stablehlo.dynamic_update_slice"(%target, %update, %start1, %start2)
+      : (tensor<?x5xf32>, tensor<2x3xf32>, tensor<i64>, tensor<i64>)
+      -> tensor<4x5xf32>
+  func.return %0 : tensor<4x5xf32>
+}
+
+// CHECK-DAG:     %[[COLS_BOUND:.*]] = arith.constant 2 : i64
+// CHECK-DAG:     %[[ROWS:.*]] = tensor.dim %[[TARGET]], %c0
+// CHECK:         %[[ROWS_BOUND:.*]] = arith.subi %[[ROWS]], %c2 : index
+// CHECK:         %[[ROWS_BOUND_I64:.*]] = arith.index_cast %[[ROWS_BOUND]] : index to i64
+// CHECK:         arith.minsi %{{.*}}, %[[ROWS_BOUND_I64]] : i64
+// CHECK:         arith.minsi %{{.*}}, %[[COLS_BOUND]] : i64
+// CHECK:         %[[INSERTED:.*]] = tensor.insert_slice %[[UPDATE]] into %[[TARGET]][%{{.*}}, %{{.*}}] [2, 3] [1, 1] : tensor<2x3xf32> into tensor<?x5xf32>
+// CHECK:         %[[CAST:.*]] = tensor.cast %[[INSERTED]] : tensor<?x5xf32> to tensor<4x5xf32>
+// CHECK:         return %[[CAST]]
+
+// -----
+
 // CHECK-LABEL: func @dynamic_slice_unsigned(
 // CHECK-SAME:    %[[ARG0:[a-zA-Z0-9_]*]]
 // CHECK-SAME:    %[[ARG1:[a-zA-Z0-9_]*]]
