@@ -1952,11 +1952,20 @@ defined as follows:
 * `cross_replica(replica_groups)` if `channel_id <= 0`.
 * `cross_partition(replica_groups)` if `channel_id > 0`.
 
-Afterwards, `result@process` is given by:
+Let `N` be the number of data operands. The root process for
+`process_groups[i]` computing `results[j]` (for `0 <= j < N`) is determined by
+`has_dynamic_root`:
 
-* `operand@process_groups[i, 0]` if there exists an `i` such that the process is
-  in `process_groups[i]`.
-* `broadcast_in_dim(constant(0, element_type(result)), [], type(result))`
+* If `has_dynamic_root = false`: the root is `process_groups[i, 0]`.
+* If `has_dynamic_root = true`: the root is
+  `process_groups[i, operands[N][j]]`.
+
+Afterwards, `results[j]@process` is given by:
+
+* the reduction of `operands[j]@process_groups[i]` with `computation`, in the
+  manner of `all_reduce`, if the process is the root of `process_groups[i]`.
+* `broadcast_in_dim(constant(is_quantized(results[j]) ? quantize(0,
+  element_type(results[j])) : 0, element_type(results[j])), [], type(results[j]))`
   otherwise.
 
 #### Inputs
