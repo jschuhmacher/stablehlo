@@ -340,6 +340,23 @@ struct ReduceOpToReduceConverter final
   }
 };
 
+/// Returns the reduce_window result extent for an input extent: (extent -
+/// dilated window) / stride + 1, or 0 when the window does not fit.
+Value buildWindowedExtent(OpBuilder& builder, Location loc, Value extent,
+                          int64_t window, int64_t dilation, int64_t stride) {
+  Value dilatedWindow =
+      arith::ConstantIndexOp::create(builder, loc, (window - 1) * dilation + 1);
+  Value span = arith::SubIOp::create(builder, loc, extent, dilatedWindow);
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value fits = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
+                                     span, zero);
+  Value count = arith::DivSIOp::create(
+      builder, loc, span, arith::ConstantIndexOp::create(builder, loc, stride));
+  count = arith::AddIOp::create(
+      builder, loc, count, arith::ConstantIndexOp::create(builder, loc, 1));
+  return arith::SelectOp::create(builder, loc, fits, count, zero);
+}
+
 struct ReduceWindowOpOnTensorsGenericConversion final
     : OpConversionPattern<mlir::stablehlo::ReduceWindowOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -417,12 +434,16 @@ struct ReduceWindowOpOnTensorsGenericConversion final
     indexingMaps.append(1, inferredMaps[1]);
     indexingMaps.append(numOperands, inferredMaps[2]);
 
-    // Setup the initial values.
+    // Setup the initial values. Dynamic results are filled once the padded
+    // inputs give their extents.
     llvm::SmallVector<Value> broadcastValues;
     for (uint64_t i = 0, s = initValues.size(); i < s; i++) {
       Value initValue = initValues[i];
       auto resultTy = llvm::cast<ShapedType>(resultTypes[i]);
-      if (!resultTy.hasStaticShape()) return failure();
+      if (!resultTy.hasStaticShape()) {
+        broadcastValues.push_back(nullptr);
+        continue;
+      }
 
       auto broadcastSizes = rewriter.getDenseI64ArrayAttr(resultTy.getShape());
       broadcastValues.push_back(mlir::stablehlo::BroadcastOp::create(
@@ -453,9 +474,29 @@ struct ReduceWindowOpOnTensorsGenericConversion final
       }
     }
 
+    for (auto [index, broadcastValue] : llvm::enumerate(broadcastValues)) {
+      if (broadcastValue) continue;
+      auto resultTy = cast<RankedTensorType>(resultTypes[index]);
+      SmallVector<Value> dynamicDims;
+      for (int64_t dim = 0; dim < rank; ++dim) {
+        if (!resultTy.isDynamicDim(dim)) continue;
+        Value extent = tensor::DimOp::create(rewriter, loc, inputs[index], dim);
+        dynamicDims.push_back(
+            buildWindowedExtent(rewriter, loc, extent, windowDimensions[dim],
+                                windowDilations[dim], windowStrides[dim]));
+      }
+      Value empty =
+          tensor::EmptyOp::create(rewriter, loc, resultTy, dynamicDims);
+      Value scalarInit =
+          tensor::ExtractOp::create(rewriter, loc, initValues[index]);
+      broadcastValue =
+          linalg::FillOp::create(rewriter, loc, scalarInit, empty).result();
+    }
+
     // Add the extra input for the reduction dimension.
-    inputs.push_back(tensor::EmptyOp::create(rewriter, loc, filteredWindowDims,
-                                             rewriter.getF32Type()));
+    inputs.push_back(tensor::EmptyOp::create(
+        rewriter, loc, filteredWindowDims,
+        cast<ShapedType>(inputs.front().getType()).getElementType()));
 
     auto linalgOp = linalg::GenericOp::create(
         rewriter, loc, /*resultTensors=*/resultTypes,
@@ -652,18 +693,8 @@ struct ReduceWindowOpConversion final
               llvm::cast<DenseIntElementsAttr>(strides).getValues<int64_t>()[i];
           auto dilation = llvm::cast<DenseIntElementsAttr>(dilations)
                               .getValues<int64_t>()[i];
-          // let j = i * stride
-          // output[i] = reduce( input[j, j + window_size * dilation) )
-          Value offset = arith::ConstantIndexOp::create(
-              rewriter, loc, fakeWindowShapes[i] * dilation);
-          dimSize = arith::SubIOp::create(rewriter, loc, dimSize, offset);
-          dimSize = arith::DivUIOp::create(
-              rewriter, loc, dimSize,
-              arith::ConstantIndexOp::create(rewriter, loc, stride));
-          dimSize = arith::AddIOp::create(
-              rewriter, loc, dimSize,
-              arith::ConstantIndexOp::create(rewriter, loc, 1));
-          resultDynamicDims.push_back(dimSize);
+          resultDynamicDims.push_back(buildWindowedExtent(
+              rewriter, loc, dimSize, fakeWindowShapes[i], dilation, stride));
         }
       }
       Value emptyTensor = tensor::EmptyOp::create(
