@@ -1649,11 +1649,19 @@ struct DynamicUpdateSliceConverter final
           extractClampedStartIndex(rewriter, loc, start, startType, ub));
     }
 
+    auto resultType = getTypeConverter()->convertType<ShapedType>(op.getType());
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op, "type conversion failed");
+
     int64_t rank = operandType.getRank();
     SmallVector<OpFoldResult, 3> strides(rank, rewriter.getI64IntegerAttr(1));
-    rewriter.replaceOpWithNewOp<tensor::InsertSliceOp>(
-        op, adaptor.getUpdate(), adaptor.getOperand(), startIndices, sizes,
-        strides);
+    Value inserted = tensor::InsertSliceOp::create(
+        rewriter, loc, adaptor.getUpdate(), adaptor.getOperand(), startIndices,
+        sizes, strides);
+    // The result type may be more static than the operand.
+    if (inserted.getType() != resultType)
+      inserted = tensor::CastOp::create(rewriter, loc, resultType, inserted);
+    rewriter.replaceOp(op, inserted);
     return success();
   }
 };
