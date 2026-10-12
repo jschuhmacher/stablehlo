@@ -1949,8 +1949,12 @@ data operand.
 The operation splits the StableHLO process grid into `process_groups` which is
 defined as follows:
 
-* `cross_replica(replica_groups)` if `channel_id <= 0`.
-* `cross_partition(replica_groups)` if `channel_id > 0`.
+* `cross_replica(replica_groups)`
+  if `channel_id <= 0 and use_global_device_ids = false`.
+* `cross_partition(replica_groups)`
+  if `channel_id > 0 and use_global_device_ids = false`.
+* `flattened_ids(replica_groups)`
+  if `channel_id > 0 and use_global_device_ids = true`.
 
 Let `N` be the number of data operands. The root process for
 `process_groups[i]` computing `results[j]` (for `0 <= j < N`) is determined by
@@ -1974,9 +1978,10 @@ Afterwards, `results[j]@process` is given by:
 |-------|-------------------------|------------------------------------------------------------------|-------------|
 | (I1)  | `operands`              | variadic number of tensors or per-tensor quantized tensors       | (C3), (C5)  |
 | (I2)  | `replica_groups`        | variadic number of 1-dimensional tensor constants of type `si64` | (C1), (C2)  |
-| (I3)  | `channel_id`            | constant of type `si64`                                          |             |
-| (I4)  | `has_dynamic_root`      | constant of type `i1`                                            |             |
-| (I5)  | `computation`           | function                                                         | (C4)        |
+| (I3)  | `channel_id`            | constant of type `si64`                                          | (C6)        |
+| (I4)  | `use_global_device_ids` | constant of type `i1`                                            | (C6)        |
+| (I5)  | `has_dynamic_root`      | constant of type `i1`                                            |             |
+| (I6)  | `computation`           | function                                                         | (C4)        |
 
 #### Outputs
 
@@ -1990,6 +1995,7 @@ Afterwards, `results[j]@process` is given by:
 * (C2) `0 <= replica_groups < N` where `N` is defined as:
   * `num_replicas` if `cross_replica` is used.
   * `num_partitions` if `cross_partition` is used.
+  * `num_processes` if `flattened_ids` is used.
 * (C3) if `has_dynamic_root` == false, `shape(results) = shape(operands)`;
   * else, `shape(results) = shape(operands[0, size(operands)-2])`,
     `dim(operands[size(operands)-1]) == 1` with
@@ -1998,6 +2004,7 @@ Afterwards, `results[j]@process` is given by:
   `is_promotable(element_type(operand), E)`.
 * (C5) If `has_dynamic_root = true`:
   `0 <= operands[size(operands)-1] < shape(replica_groups)[1]`.
+* (C6) If `use_global_device_ids = true`, then `channel_id > 0`.
 
 #### Examples
 
