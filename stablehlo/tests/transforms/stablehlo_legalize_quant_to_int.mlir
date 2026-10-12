@@ -2599,7 +2599,8 @@ func.func @collective_reduce_global_device_ids(%arg0: tensor<3x2x!quant.uniform<
 // -----
 
 // The second operand is requantized to the reducer type, each dynamic root picks
-// a column of the groups, and a u8 zero point above 127 stays unsigned.
+// a column of the groups, a root outside the group names no one, and a u8 zero
+// point above 127 stays unsigned.
 // CHECK-LABEL: func @collective_reduce_dynamic_root_requantize
 // CHECK-SAME: %[[ARG0:[^:]+]]: tensor<2x3xi8>, %[[ARG1:[^:]+]]: tensor<3x5xi8>, %[[ROOT:[^:]+]]: tensor<2xi32>
 // CHECK-NOT: "stablehlo.collective_reduce"
@@ -2608,10 +2609,15 @@ func.func @collective_reduce_global_device_ids(%arg0: tensor<3x2x!quant.uniform<
 // CHECK: %[[GROUPS:.+]] = stablehlo.constant dense<{{\[\[}}0, 1], [2, 3]]> : tensor<2x2xi64>
 // CHECK: stablehlo.slice %[[ROOT]] [0:1]
 // CHECK: %[[COLUMN0:.+]] = stablehlo.dynamic_slice %[[GROUPS]]
+// CHECK: %[[AT_LEAST_0:.+]] = stablehlo.compare GE
+// CHECK: %[[BELOW_SIZE:.+]] = stablehlo.compare LT
+// CHECK: %[[IN_GROUP0:.+]] = stablehlo.and %[[AT_LEAST_0]], %[[BELOW_SIZE]]
 // CHECK: stablehlo.compare EQ, %{{.+}}, %{{.+}}
-// CHECK: %[[IS_ROOT0:.+]] = stablehlo.reduce
+// CHECK: %[[IS_COLUMN0:.+]] = stablehlo.reduce
+// CHECK: %[[IS_ROOT0:.+]] = stablehlo.and %[[IN_GROUP0]], %[[IS_COLUMN0]]
 // CHECK: stablehlo.slice %[[ROOT]] [1:2]
-// CHECK: %[[IS_ROOT1:.+]] = stablehlo.reduce
+// CHECK: stablehlo.reduce
+// CHECK: %[[IS_ROOT1:.+]] = stablehlo.and
 // CHECK: %[[ZP0:.+]] = stablehlo.constant dense<-56> : tensor<i8>
 // CHECK: chlo.broadcast_select %[[IS_ROOT0]], %[[REDUCED]]#0, %[[ZP0]] : (tensor<i1>, tensor<2x3xi8>, tensor<i8>) -> tensor<2x3xi8>
 // CHECK: %[[ZP1:.+]] = stablehlo.constant dense<-56> : tensor<i8>
