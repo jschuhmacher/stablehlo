@@ -2306,10 +2306,11 @@ func.func @all_to_all(%arg3: tensor<2x4x!quant.uniform<i8:f32, 1.0:17>>) -> tens
 
 // -----
 
-// Ranks that receive nothing hold quantize(0), the zero point, so the permute
-// runs on dequantized values.
+// Ranks that receive nothing hold quantize(0), the zero point; channel id 0
+// selects replicas.
 // CHECK-LABEL: func @collective_permute
-// CHECK: stablehlo.collective_permute{{.*}} : (tensor<2x3xf32>) -> tensor<2x3xf32>
+// CHECK: stablehlo.collective_permute{{.*}} : (tensor<2x3xi8>) -> tensor<2x3xi8>
+// CHECK: stablehlo.replica_id
 func.func @collective_permute(%arg0: tensor<2x3x!quant.uniform<i8:f32, 1.0:17>>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:17>> {
   %0 = "stablehlo.collective_permute"(%arg0) { source_target_pairs = dense<[[0, 1], [1, 2], [2, 3]]> : tensor<3x2xi64>, channel_handle = #stablehlo.channel_handle<handle = 0, type = 0>} : (tensor<2x3x!quant.uniform<i8:f32, 1.0:17>>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:17>>
   func.return %0 : tensor<2x3x!quant.uniform<i8:f32, 1.0:17>>
@@ -2317,9 +2318,11 @@ func.func @collective_permute(%arg0: tensor<2x3x!quant.uniform<i8:f32, 1.0:17>>)
 
 // -----
 
-// Outside every group the result is quantize(0), the zero point.
+// Outside every group the result is quantize(0), the zero point; channel id 1
+// selects partitions.
 // CHECK-LABEL: func @collective_broadcast
-// CHECK: stablehlo.collective_broadcast{{.*}} : (tensor<2x3xf32>) -> tensor<2x3xf32>
+// CHECK: stablehlo.collective_broadcast{{.*}} : (tensor<2x3xi8>) -> tensor<2x3xi8>
+// CHECK: stablehlo.partition_id
 func.func @collective_broadcast(%arg0: tensor<2x3x!quant.uniform<i8:f32, 0.5:7>>) -> tensor<2x3x!quant.uniform<i8:f32, 0.5:7>> {
   %0 = "stablehlo.collective_broadcast"(%arg0) { replica_groups = dense<[[1, 2]]> : tensor<1x2xi64>, channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>} : (tensor<2x3x!quant.uniform<i8:f32, 0.5:7>>) -> tensor<2x3x!quant.uniform<i8:f32, 0.5:7>>
   func.return %0 : tensor<2x3x!quant.uniform<i8:f32, 0.5:7>>
@@ -2944,4 +2947,92 @@ func.func @all_reduce_max_unsigned(%arg0: tensor<2x3x!quant.uniform<u8:f32, 0.5:
 func.func @minimum_unsigned(%arg0: tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>, %arg1: tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>) -> tensor<2x3x!quant.uniform<u8:f32, 0.5:3>> {
   %0 = stablehlo.minimum %arg0, %arg1 : tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
   func.return %0 : tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
+}
+
+// -----
+
+// Permute moves storage; a process that is no target gets the zero point.
+// CHECK-LABEL: func @collective_permute_storage
+// CHECK-SAME: %[[ARG:.+]]: tensor<2x3xi8>
+// CHECK-NOT: uniform_dequantize
+// CHECK: %[[MOVED:.+]] = "stablehlo.collective_permute"(%[[ARG]])
+// CHECK-SAME: (tensor<2x3xi8>) -> tensor<2x3xi8>
+// CHECK: stablehlo.replica_id
+// CHECK: %[[TARGETS:.+]] = stablehlo.constant dense<[1, 2]> : tensor<2xi64>
+// CHECK: stablehlo.compare EQ, %{{.+}}, %[[TARGETS]]
+// CHECK: %[[RECEIVES:.+]] = stablehlo.reduce
+// CHECK: %[[ZP:.+]] = stablehlo.constant dense<3> : tensor<i8>
+// CHECK: chlo.broadcast_select %[[RECEIVES]], %[[MOVED]], %[[ZP]]
+func.func @collective_permute_storage(%arg0: tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>) -> tensor<2x3x!quant.uniform<u8:f32, 0.5:3>> {
+  %0 = "stablehlo.collective_permute"(%arg0) {source_target_pairs = dense<[[0, 1], [1, 2]]> : tensor<2x2xi64>} : (tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>) -> tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
+  func.return %0 : tensor<2x3x!quant.uniform<u8:f32, 0.5:3>>
+}
+
+// -----
+
+// A positive channel id makes the partition id the process id.
+// CHECK-LABEL: func @collective_permute_cross_partition
+// CHECK: "stablehlo.collective_permute"
+// CHECK-SAME: (tensor<3x2xi8>) -> tensor<3x2xi8>
+// CHECK: stablehlo.partition_id
+// CHECK-NOT: stablehlo.replica_id
+// CHECK: stablehlo.constant dense<[2, 0]> : tensor<2xi64>
+// CHECK: stablehlo.constant dense<-5> : tensor<i8>
+func.func @collective_permute_cross_partition(%arg0: tensor<3x2x!quant.uniform<i8:f32, 0.25:-5>>) -> tensor<3x2x!quant.uniform<i8:f32, 0.25:-5>> {
+  %0 = "stablehlo.collective_permute"(%arg0) {
+    source_target_pairs = dense<[[0, 2], [2, 0]]> : tensor<2x2xi64>,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>
+  } : (tensor<3x2x!quant.uniform<i8:f32, 0.25:-5>>) -> tensor<3x2x!quant.uniform<i8:f32, 0.25:-5>>
+  func.return %0 : tensor<3x2x!quant.uniform<i8:f32, 0.25:-5>>
+}
+
+// -----
+
+// Membership is any id of the groups; processes 1 and 4 are in none.
+// CHECK-LABEL: func @collective_broadcast_partial_groups
+// CHECK-NOT: uniform_dequantize
+// CHECK: %[[MOVED:.+]] = "stablehlo.collective_broadcast"
+// CHECK-SAME: (tensor<2x3xi8>) -> tensor<2x3xi8>
+// CHECK: stablehlo.replica_id
+// CHECK: %[[IDS:.+]] = stablehlo.constant dense<[0, 2, 3, 5]> : tensor<4xi64>
+// CHECK: stablehlo.compare EQ, %{{.+}}, %[[IDS]]
+// CHECK: %[[MEMBER:.+]] = stablehlo.reduce
+// CHECK: chlo.broadcast_select %[[MEMBER]], %[[MOVED]], %{{.+}}
+func.func @collective_broadcast_partial_groups(%arg0: tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:7>> {
+  %0 = "stablehlo.collective_broadcast"(%arg0) {replica_groups = dense<[[0, 2], [3, 5]]> : tensor<2x2xi64>} : (tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
+  func.return %0 : tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
+}
+
+// -----
+
+// A dynamic root moves with the data; membership does not depend on it.
+// CHECK-LABEL: func @collective_broadcast_dynamic_root
+// CHECK-SAME: %[[ARG:.+]]: tensor<2x3xi8>, %[[ROOTS:.+]]: tensor<1xi32>
+// CHECK: %[[MOVED:.+]] = "stablehlo.collective_broadcast"(%[[ARG]], %[[ROOTS]])
+// CHECK-SAME: has_dynamic_root
+// CHECK-SAME: (tensor<2x3xi8>, tensor<1xi32>) -> tensor<2x3xi8>
+// CHECK: chlo.broadcast_select %{{.+}}, %[[MOVED]], %{{.+}}
+func.func @collective_broadcast_dynamic_root(%arg0: tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>, %roots: tensor<1xi32>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:7>> {
+  %0 = "stablehlo.collective_broadcast"(%arg0, %roots) {replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>, has_dynamic_root} : (tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>, tensor<1xi32>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
+  func.return %0 : tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
+}
+
+// -----
+
+func.func private @mesh()
+
+// Mesh-axes groups name no process ids, so a broadcast of ones marks members.
+// CHECK-LABEL: func @collective_broadcast_mesh_axes
+// CHECK: %[[MOVED:.+]] = "stablehlo.collective_broadcast"
+// CHECK-SAME: (tensor<2x3xi8>) -> tensor<2x3xi8>
+// CHECK: %[[ONES:.+]] = "stablehlo.collective_broadcast"
+// CHECK-SAME: (tensor<i32>) -> tensor<i32>
+// CHECK: %[[MEMBER:.+]] = stablehlo.compare NE, %[[ONES]]
+// CHECK: chlo.broadcast_select %[[MEMBER]], %[[MOVED]], %{{.+}}
+func.func @collective_broadcast_mesh_axes(%arg0: tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:7>> {
+  %0 = "stablehlo.collective_broadcast"(%arg0) {
+    replica_groups = #stablehlo.replica_group_mesh_axes<mesh = @mesh, axes = [#stablehlo.axis_ref<name = "x">]>,
+    channel_handle = #stablehlo.channel_handle<handle = 1, type = 1>
+  } : (tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>) -> tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
+  func.return %0 : tensor<2x3x!quant.uniform<i8:f32, 1.0:7>>
 }
